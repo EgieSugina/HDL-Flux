@@ -9,7 +9,7 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .mypy_cache/
-
+config.json
 # Runtime output
 downloads*/
 videos/

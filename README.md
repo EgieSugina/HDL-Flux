@@ -1,7 +1,7 @@
-# Unified Video Downloader
+# HDL Flux
 
 <p align="center">
-  <strong>yt-dlp · YouTube</strong><br>
+  <strong>HDL Flux · Unified Downloader</strong><br>
   <sub>Rich CLI · JSON config · Linux & Windows</sub>
 </p>
 
@@ -42,7 +42,7 @@ Konfigurasi utama ada di JSON + env (`config.defaults.json`, `config.json`, `.en
 ### 1) Masuk ke folder proyek
 
 ```bash
-cd hls-downloader
+cd HDL-Flux
 ```
 
 ### 2) Jalankan starter script (recommended)
