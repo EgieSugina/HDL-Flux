@@ -169,7 +169,13 @@ def run():
     hstream_only = mode == "hstream"
     generic_only = mode == "generic"
 
-    urls = routing.load_urls_from_list(cfg, console, hstream_only=hstream_only)
+    clean_list_path = routing.rebuild_clean_url_file(cfg, console, cfg.list_file)
+    urls = routing.load_urls_from_list(
+        cfg,
+        console,
+        path=clean_list_path,
+        hstream_only=hstream_only,
+    )
     if generic_only:
         urls = [u for u in urls if not routing.is_hstream_url(u, cfg)]
     elif mode != "auto":

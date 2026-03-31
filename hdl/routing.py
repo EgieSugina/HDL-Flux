@@ -69,3 +69,26 @@ def load_urls_from_list(
             seen.add(line)
     return out
 
+
+def rebuild_clean_url_file(cfg: AppConfig, console, source_path: Path | None = None) -> Path:
+    src = source_path or cfg.list_file
+    dst = cfg.clean_list_file
+    if not src.exists():
+        console.print(cfg.text("urls", "list_missing", path=str(src)))
+        dst.write_text("", "utf-8")
+        return dst
+    comment_p = str(cfg.ui.get("comment_prefix", "#"))
+    prefixes = list(cfg.ui.get("url_line_prefixes", ("http://", "https://")))
+    unique: set[str] = set()
+    for line in src.read_text("utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith(comment_p):
+            continue
+        if not any(s.startswith(p) for p in prefixes):
+            continue
+        unique.add(s)
+    cleaned = sorted(unique, key=lambda x: x.lower())
+    dst.write_text("\n".join(cleaned), "utf-8")
+    console.print(f"[dim]Clean URL list rebuilt:[/] [bold]{dst}[/] [dim]({len(cleaned)} items)[/]")
+    return dst
+

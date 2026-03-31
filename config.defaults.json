@@ -89,6 +89,7 @@
     "state_file": ".download_state.json",
     "last_session_file": ".last_session.json",
     "list_file": "list.txt",
+    "clean_list_file": "clean_url.txt",
     "failed_links_file": "failed_links.txt",
     "success_links_file": "link_succsess.txt",
     "credentials_file": ".credentials.json",
