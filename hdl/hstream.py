@@ -163,6 +163,10 @@ class HStreamDownloader:
                 self._sync_cookies()
                 return True
             except TimeoutException:
+                try:
+                    self._driver.execute_script("window.stop();")
+                except Exception:
+                    pass
                 self.console.print(f"  [red]{self.cfg.h_msg('login_timeout')}[/]")
                 return False
             except Exception as exc:
@@ -190,7 +194,7 @@ class HStreamDownloader:
         pat = self.cfg.h["mpd_source_regex"]
         return {size: url for url, size in re.findall(pat, html)}
 
-    def get_mpd_urls(self, page_url: str) -> dict[str, str] | None:
+    def get_mpd_urls(self, page_url: str, on_status=None) -> dict[str, str] | None:
         h = self.cfg.h
         vtag = h["selenium_video_tag"]
         tmo = float(h["video_wait_timeout_sec"])
@@ -200,6 +204,8 @@ class HStreamDownloader:
             with self._browser_lock:
                 if self._init_browser():
                     try:
+                        if on_status:
+                            on_status("browser fetch page")
                         self._driver.get(page_url)
                         try:
                             WebDriverWait(self._driver, tmo).until(EC.presence_of_element_located((By.TAG_NAME, vtag)))
@@ -208,13 +214,28 @@ class HStreamDownloader:
                             pass
                         mpd = self._extract_mpd_urls(self._driver.page_source)
                         if mpd:
+                            if on_status:
+                                on_status("mpd found via browser")
                             return mpd
+                    except TimeoutException:
+                        if on_status:
+                            on_status("browser timeout, fallback http")
+                        try:
+                            self._driver.execute_script("window.stop();")
+                        except Exception:
+                            pass
                     except Exception:
+                        if on_status:
+                            on_status("browser failed, fallback http")
                         pass
         try:
+            if on_status:
+                on_status("http fetch page")
             with self.session.get(page_url, timeout=req_t) as resp:
                 resp.raise_for_status()
                 mpd = self._extract_mpd_urls(resp.text)
+            if mpd and on_status:
+                on_status("mpd found via http")
             return mpd or None
         except Exception:
             return None
@@ -227,9 +248,10 @@ class HStreamDownloader:
         lab = self.quality if self.quality in qmap else max(qmap.keys(), key=lambda z: int(z))
         return str(yd["format_height_template"]).format(h=lab)
 
-    def _download_ytdlp(self, page_url, mpd_url, name, workdir, on_progress):
+    def _download_ytdlp(self, page_url, mpd_url, name, workdir, on_progress, on_status=None):
         h = self.cfg.h
-        urls_to_try = [u for u in (page_url, mpd_url) if u]
+        # Prefer MPD directly for hstream; page URLs are often unsupported by yt-dlp.
+        urls_to_try = [u for u in (mpd_url, page_url) if u]
         last_err = ""
         min_out = int(h["min_output_bytes"])
         yd = self.cfg.ytdlp_cfg()
@@ -239,6 +261,8 @@ class HStreamDownloader:
         for target_url in urls_to_try:
             for attempt in range(1, self.max_retries + 1):
                 if attempt > 1:
+                    if on_status:
+                        on_status(f"yt-dlp retry {attempt}/{self.max_retries}")
                     self._clean_partials(workdir)
                     mult = int(h["ydl_retry_backoff_multiplier_sec"])
                     cap = int(h["ydl_retry_backoff_cap_sec"])
@@ -378,8 +402,10 @@ class HStreamDownloader:
                 time.sleep(float(h["chunk_http_fail_sleep_sec"]))
         return False
 
-    def _download_chunks(self, mpd_url, workdir, name, on_progress):
+    def _download_chunks(self, mpd_url, workdir, name, on_progress, on_status=None):
         h = self.cfg.h
+        if on_status:
+            on_status("chunks parse mpd")
         mpd = self._parse_mpd(mpd_url)
         if not mpd or not mpd.get("video"):
             return False, self.cfg.h_msg("mpd_parse_failed")
@@ -395,6 +421,8 @@ class HStreamDownloader:
             path = path.replace("$Number%05d$", f"{i:05d}")
             chunk_list.append((i, path))
         total = len(chunk_list)
+        if on_status:
+            on_status(f"chunks downloading {total} segments")
         done_count = 0
         failed = []
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -414,8 +442,12 @@ class HStreamDownloader:
         for num, url, fp in failed:
             if self._download_chunk(url, fp, retries=rfail):
                 done_count += 1
+        if on_status and failed:
+            on_status(f"chunks recovered {done_count}/{total}")
         if done_count < total * ratio:
             return False, self.cfg.h_msg("chunks_missing_template", missing=total - done_count, total=total)
+        if on_status:
+            on_status("chunks converting with ffmpeg")
         ok, result = self._convert_chunks(workdir, name)
         if on_progress:
             on_progress(100)
@@ -587,23 +619,46 @@ class HStreamDownloader:
                 except OSError:
                     pass
 
-    def download_one(self, page_url, on_progress=None):
+    def download_one(self, page_url, on_progress=None, on_status=None):
         name = routing.hstream_video_name_from_url(page_url, self.cfg)
         workdir = str(self.cfg.downloads_dir / name)
         os.makedirs(workdir, exist_ok=True)
-        mpd_urls = self.get_mpd_urls(page_url)
+        if on_status:
+            on_status("resolve mpd")
+        mpd_urls = self.get_mpd_urls(page_url, on_status=on_status)
         if not mpd_urls:
+            if on_status:
+                on_status("mpd not found")
             return False, name, self.cfg.h_msg("mpd_not_found")
         keys = list(mpd_urls.keys())
         selected = mpd_urls.get(self.quality) or mpd_urls[max(keys, key=lambda z: int(z))]
         if self.prefer_ytdlp:
-            ok, err = self._download_ytdlp(page_url, selected, name, workdir, on_progress)
+            if on_status:
+                on_status("trying yt-dlp")
+            ok, err = self._download_ytdlp(
+                page_url,
+                selected,
+                name,
+                workdir,
+                on_progress,
+                on_status=on_status,
+            )
             if ok:
                 out = self._find_video(workdir, name)
                 return True, name, out or workdir
         last_err = ""
         for attempt in range(1, self.max_retries + 1):
-            ok, result = self._download_chunks(selected, workdir, name, on_progress)
+            if on_status and attempt == 1:
+                on_status("trying chunks")
+            if attempt > 1 and on_status:
+                on_status(f"chunks retry {attempt}/{self.max_retries}")
+            ok, result = self._download_chunks(
+                selected,
+                workdir,
+                name,
+                on_progress,
+                on_status=on_status,
+            )
             if ok:
                 out = self._find_video(workdir, name)
                 return True, name, out or result

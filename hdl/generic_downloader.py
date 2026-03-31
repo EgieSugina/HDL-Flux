@@ -96,6 +96,7 @@ def download_generic_video(
     cookies_browser: str | None,
     max_retries: int | None = None,
     retry_delay: int | None = None,
+    on_status=None,
 ) -> tuple[bool, str]:
     """Returns (ok, title_or_error)."""
     if yt_dlp is None:
@@ -129,6 +130,8 @@ def download_generic_video(
             title = str(g["fallback_title"])
             for fmt_try in fmt_chain:
                 try:
+                    if on_status:
+                        on_status(f"generic try format: {fmt_try}")
                     ydl_opts = build_generic_ydl_opts(
                         cfg,
                         url,
@@ -141,6 +144,8 @@ def download_generic_video(
                         format_str=fmt_try,
                     )
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        if on_status:
+                            on_status("generic extract info")
                         info = ydl.extract_info(url, download=False)
                         unk = str(g["unknown_title"])
                         fb = str(g["fallback_title"])
@@ -148,6 +153,8 @@ def download_generic_video(
                         title = unk if raw is None else raw
                         title = str(title).strip() or fb
                         on_progress(0)
+                        if on_status:
+                            on_status("generic downloading")
                         ydl.download([url])
                     on_progress(100)
                     return True, title
@@ -160,6 +167,8 @@ def download_generic_video(
             last_err = str(e)[:err_max]
             retry_count += 1
             if retry_count <= mr:
+                if on_status:
+                    on_status(f"retry {retry_count}/{mr}")
                 time.sleep(rd)
             else:
                 return False, last_err

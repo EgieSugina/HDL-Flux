@@ -109,6 +109,16 @@ def _common_chromium_args(headless: bool, cfg: AppConfig) -> list[str]:
     return args
 
 
+def _apply_webdriver_timeouts(drv, cfg: AppConfig):
+    # Prevent browser navigation from hanging forever.
+    try:
+        nav_tmo = float(cfg.h.get("request_timeout_sec", 30))
+        drv.set_page_load_timeout(nav_tmo)
+        drv.set_script_timeout(nav_tmo)
+    except Exception:
+        pass
+
+
 def create_selenium_driver(headless: bool, cfg: AppConfig):
     if not SELENIUM_AVAILABLE:
         return None, cfg.h_msg("selenium_not_installed")
@@ -136,6 +146,7 @@ def create_selenium_driver(headless: bool, cfg: AppConfig):
                     if ch_bin:
                         opts.binary_location = ch_bin
                 drv = webdriver.Chrome(options=opts)
+                _apply_webdriver_timeouts(drv, cfg)
                 return drv, browser
             if browser == "edge":
                 opts = EdgeOptions()
@@ -143,12 +154,14 @@ def create_selenium_driver(headless: bool, cfg: AppConfig):
                     opts.add_argument(a)
                 opts.add_argument(f"user-agent={ua}")
                 drv = webdriver.Edge(options=opts)
+                _apply_webdriver_timeouts(drv, cfg)
                 return drv, browser
             if browser == "firefox":
                 opts = FirefoxOptions()
                 if headless:
                     opts.add_argument("-headless")
                 drv = webdriver.Firefox(options=opts)
+                _apply_webdriver_timeouts(drv, cfg)
                 return drv, browser
             if browser == "brave":
                 opts = ChromeOptions()
@@ -163,9 +176,11 @@ def create_selenium_driver(headless: bool, cfg: AppConfig):
                 if brave:
                     opts.binary_location = brave
                 drv = webdriver.Chrome(options=opts)
+                _apply_webdriver_timeouts(drv, cfg)
                 return drv, browser
             if browser == "safari":
                 drv = webdriver.Safari()
+                _apply_webdriver_timeouts(drv, cfg)
                 return drv, browser
         except Exception as e:
             last_err = str(e)[:err_max]

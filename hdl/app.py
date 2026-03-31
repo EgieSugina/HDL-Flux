@@ -380,6 +380,7 @@ def run():
     failed_urls: list[str] = []
     success_urls: list[str] = []
     results_lock = threading.Lock()
+    stop_event = threading.Event()
     t0 = time.time()
 
     console.print()
@@ -423,7 +424,7 @@ def run():
         if live is not None:
             live.update(Group(progress, render_logs_panel()), refresh=True)
 
-    with Progress(
+    progress = Progress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}"),
         BarColumn(bar_width=bw),
@@ -431,22 +432,30 @@ def run():
         TimeElapsedColumn(),
         console=console,
         expand=False,
-    ) as progress:
-        with Live(
-            Group(progress, render_logs_panel()),
-            console=console,
-            refresh_per_second=max(log_rps, 2),
-            transient=False,
-        ) as live:
-            live_ref["live"] = live
+        auto_refresh=False,
+    )
+    with Live(
+        Group(progress, render_logs_panel()),
+        console=console,
+        refresh_per_second=max(log_rps, 2),
+        transient=False,
+    ) as live:
+        live_ref["live"] = live
+        progress.start()
+        try:
             overall = progress.add_task(f"[cyan]{ov_lbl}  [0/{len(urls)}]", total=len(urls))
             log_event(f"Download session started ({len(urls)} URLs).", "cyan")
 
             def run_one(url: str):
+                if stop_event.is_set():
+                    return
                 short = url.rstrip("/").split("/")[-1][:tmax]
                 task = progress.add_task(f"  {short}", total=100)
                 is_hstream = routing.is_hstream_url(url, cfg)
                 log_event(f"Start: {short}", "dim")
+                retry_status = ""
+                last_progress_log_ts = 0.0
+                last_progress_bucket = -1
                 if is_hstream:
                     vname = routing.hstream_video_name_from_url(url, cfg)
                     existing = routing.find_existing_hstream_video(cfg, vname, fmt)
@@ -461,11 +470,37 @@ def run():
                     state.mark_start(url, short)
 
                 def on_progress(pct):
-                    progress.update(task, completed=min(pct, cap_pct))
+                    nonlocal last_progress_log_ts, last_progress_bucket
+                    desc = f"  {short}"
+                    if retry_status:
+                        desc += f" [yellow]({retry_status})[/]"
+                    progress.update(task, completed=min(pct, cap_pct), description=desc)
+                    bucket = int(pct // 10)
+                    now = time.time()
+                    if bucket > last_progress_bucket and (bucket % 2 == 0):
+                        last_progress_bucket = bucket
+                        last_progress_log_ts = now
+                        log_event(f"{short}: progress {pct:.1f}%", "cyan")
+                    elif now - last_progress_log_ts >= 12 and pct > 0:
+                        last_progress_log_ts = now
+                        log_event(f"{short}: still running ({pct:.1f}%)", "blue")
+
+                def on_status(msg: str):
+                    nonlocal retry_status
+                    retry_status = msg
+                    progress.update(
+                        task,
+                        description=f"  {short} [yellow]({retry_status})[/]",
+                    )
+                    log_event(f"{short}: {msg}", "yellow")
 
                 try:
                     if is_hstream and hs:
-                        ok, vname, result = hs.download_one(url, on_progress)
+                        ok, vname, result = hs.download_one(
+                            url,
+                            on_progress,
+                            on_status=on_status,
+                        )
                         with results_lock:
                             if ok:
                                 dst = move_to_videos(cfg, vname, fmt)
@@ -489,6 +524,7 @@ def run():
                             proxy=proxy,
                             cookiefile=cookiefile,
                             cookies_browser=cookies_browser,
+                            on_status=on_status,
                         )
                         with results_lock:
                             if gok:
@@ -521,8 +557,15 @@ def run():
                 for fut in as_completed(futs):
                     try:
                         fut.result()
+                    except KeyboardInterrupt:
+                        stop_event.set()
+                        for pending in futs:
+                            pending.cancel()
+                        raise
                     except Exception:
                         pass
+        finally:
+            progress.stop()
 
     if hs:
         hs.close_browser()
