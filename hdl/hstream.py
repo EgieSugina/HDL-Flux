@@ -212,9 +212,9 @@ class HStreamDownloader:
                     except Exception:
                         pass
         try:
-            resp = self.session.get(page_url, timeout=req_t)
-            resp.raise_for_status()
-            mpd = self._extract_mpd_urls(resp.text)
+            with self.session.get(page_url, timeout=req_t) as resp:
+                resp.raise_for_status()
+                mpd = self._extract_mpd_urls(resp.text)
             return mpd or None
         except Exception:
             return None
@@ -248,6 +248,7 @@ class HStreamDownloader:
                         "outtmpl": str(Path(workdir) / name) + ".%(ext)s",
                         "quiet": True,
                         "no_warnings": True,
+                        "nocheckcertificate": True,
                         "http_headers": dict(self.session.headers),
                         "http_chunk_size": int(h["ydl_http_chunk_size"]),
                         "noplaylist": True,
@@ -295,16 +296,21 @@ class HStreamDownloader:
                 except Exception as exc:
                     last_err = str(exc)[: self._err_max]
                     if usub in last_err.lower():
-                        break
+                        # Unsupported URL: stop yt-dlp path and fallback to chunk flow.
+                        return False, last_err
                     if attempt >= self.max_retries:
                         break
         return False, last_err
 
     def _parse_mpd(self, mpd_url):
         try:
-            resp = self.session.get(mpd_url, timeout=float(self.cfg.h["request_timeout_sec"]))
-            resp.raise_for_status()
-            root = ET.fromstring(resp.content)
+            with self.session.get(
+                mpd_url,
+                timeout=float(self.cfg.h["request_timeout_sec"]),
+            ) as resp:
+                resp.raise_for_status()
+                content = resp.content
+            root = ET.fromstring(content)
             base = mpd_url.rsplit("/", 1)[0] + "/"
             info = {"video": [], "audio": [], "base": base}
             for ada in root.iter():
@@ -359,12 +365,13 @@ class HStreamDownloader:
             return True
         for _ in range(retries):
             try:
-                resp = self.session.get(url, timeout=req_t)
-                resp.raise_for_status()
-                if not resp.content:
+                with self.session.get(url, timeout=req_t) as resp:
+                    resp.raise_for_status()
+                    content = resp.content
+                if not content:
                     continue
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
-                Path(filepath).write_bytes(resp.content)
+                Path(filepath).write_bytes(content)
                 if os.path.getsize(filepath) > 0:
                     return True
             except Exception:
@@ -594,11 +601,19 @@ class HStreamDownloader:
             if ok:
                 out = self._find_video(workdir, name)
                 return True, name, out or workdir
-        ok, result = self._download_chunks(selected, workdir, name, on_progress)
-        if ok:
-            out = self._find_video(workdir, name)
-            return True, name, out or result
-        return False, name, result
+        last_err = ""
+        for attempt in range(1, self.max_retries + 1):
+            ok, result = self._download_chunks(selected, workdir, name, on_progress)
+            if ok:
+                out = self._find_video(workdir, name)
+                return True, name, out or result
+            last_err = str(result)
+            if attempt < self.max_retries:
+                # Small backoff before retrying full chunk pipeline.
+                mult = int(self.cfg.h["ydl_retry_backoff_multiplier_sec"])
+                cap = int(self.cfg.h["ydl_retry_backoff_cap_sec"])
+                time.sleep(min(mult * attempt, cap))
+        return False, name, last_err
 
 
 def move_to_videos(cfg: AppConfig, video_name: str, output_format: str = "mp4") -> Path | None:
