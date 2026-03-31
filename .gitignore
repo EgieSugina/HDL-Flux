@@ -18,7 +18,9 @@ logs/
 # Local input/state
 list.txt
 .download_state.json
+.last_session.json
 failed_links.txt
+link_succsess.txt
 
 # Secrets / local auth
 .env

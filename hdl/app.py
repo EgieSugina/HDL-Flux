@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import threading
@@ -48,6 +49,27 @@ def _make_console(cfg) -> Console:
 
 def _box_named(name: str):
     return getattr(box, str(name).upper().replace("-", "_"), box.ROUNDED)
+
+
+def _load_last_session(cfg) -> dict | None:
+    path = cfg.last_session_file
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _save_last_session(cfg, data: dict) -> None:
+    try:
+        cfg.last_session_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            "utf-8",
+        )
+    except OSError:
+        pass
 
 
 def show_banner(cfg):
@@ -132,7 +154,18 @@ def run():
     console.print()
     console.rule(rules.get("setup", "[bold cyan]Setup[/]"))
     console.print()
-    mode = Prompt.ask(cfg.prompt_label("mode"), choices=list(ui["mode_choices"]), default=str(ui["mode_default"]))
+    last_session = _load_last_session(cfg)
+    use_prev = bool(last_session) and Confirm.ask(
+        cfg.prompt_label("use_previous_session"),
+        default=True,
+    )
+    mode = str(ui["mode_default"])
+    if use_prev and last_session:
+        mode = str(last_session.get("mode", mode))
+        if mode not in set(ui["mode_choices"]):
+            mode = str(ui["mode_default"])
+    else:
+        mode = Prompt.ask(cfg.prompt_label("mode"), choices=list(ui["mode_choices"]), default=str(ui["mode_default"]))
     hstream_only = mode == "hstream"
     generic_only = mode == "generic"
 
@@ -184,39 +217,55 @@ def run():
 
     proxy = None
     purl = cfg.proxy_default_url
-    if Confirm.ask(cfg.prompt_label("proxy", url=purl), default=False):
+    if use_prev and last_session:
+        if bool(last_session.get("use_proxy", False)):
+            proxy = purl
+    elif Confirm.ask(cfg.prompt_label("proxy", url=purl), default=False):
         proxy = purl
 
     cookiefile: str | None = None
     cookies_browser: str | None = None
     if generic_urls:
-        console.print(cfg.text("cookies", "hint_line", browser=browser_utils.default_browser_ytdlp_name(cfg)))
-        csrc = Prompt.ask(cfg.prompt_label("cookie_source"), choices=list(ui["cookie_source_choices"]), default=str(ui["cookie_source_default"]))
-        if csrc == "default":
-            bn = browser_utils.default_browser_ytdlp_name(cfg)
-            if Confirm.ask(cfg.prompt_label("cookie_close_default", browser=bn), default=False):
-                browser_utils.kill_browser_for_cookies(bn, cfg)
-            cache_path = cfg.cookies_cache_file
-            if browser_utils.export_cookies_ytdlp(bn, cache_path, cfg):
-                cookiefile = str(cache_path)
-                console.print(cfg.text("cookies", "exported", name=cache_path.name))
+        if use_prev and last_session:
+            prev_cookiefile = str(last_session.get("cookiefile", "")).strip()
+            prev_browser = str(last_session.get("cookies_browser", "")).strip()
+            if prev_cookiefile and os.path.isfile(prev_cookiefile):
+                cookiefile = prev_cookiefile
+            elif prev_browser:
+                cookies_browser = prev_browser
             else:
-                cookies_browser = bn
-                console.print(cfg.text("cookies", "live_browser"))
-        elif csrc == "file":
-            p = Prompt.ask(cfg.prompt_label("cookie_path"))
-            if p and os.path.isfile(p):
-                cookiefile = p
-        elif csrc != "none":
-            if Confirm.ask(cfg.prompt_label("cookie_close_named", browser=csrc), default=False):
-                browser_utils.kill_browser_for_cookies(csrc, cfg)
-            cache_path = cfg.cookies_cache_file
-            if browser_utils.export_cookies_ytdlp(csrc, cache_path, cfg):
-                cookiefile = str(cache_path)
-            else:
-                cookies_browser = csrc
+                cookies_browser = None
+        else:
+            console.print(cfg.text("cookies", "hint_line", browser=browser_utils.default_browser_ytdlp_name(cfg)))
+            csrc = Prompt.ask(cfg.prompt_label("cookie_source"), choices=list(ui["cookie_source_choices"]), default=str(ui["cookie_source_default"]))
+            if csrc == "default":
+                bn = browser_utils.default_browser_ytdlp_name(cfg)
+                if Confirm.ask(cfg.prompt_label("cookie_close_default", browser=bn), default=False):
+                    browser_utils.kill_browser_for_cookies(bn, cfg)
+                cache_path = cfg.cookies_cache_file
+                if browser_utils.export_cookies_ytdlp(bn, cache_path, cfg):
+                    cookiefile = str(cache_path)
+                    console.print(cfg.text("cookies", "exported", name=cache_path.name))
+                else:
+                    cookies_browser = bn
+                    console.print(cfg.text("cookies", "live_browser"))
+            elif csrc == "file":
+                p = Prompt.ask(cfg.prompt_label("cookie_path"))
+                if p and os.path.isfile(p):
+                    cookiefile = p
+            elif csrc != "none":
+                if Confirm.ask(cfg.prompt_label("cookie_close_named", browser=csrc), default=False):
+                    browser_utils.kill_browser_for_cookies(csrc, cfg)
+                cache_path = cfg.cookies_cache_file
+                if browser_utils.export_cookies_ytdlp(csrc, cache_path, cfg):
+                    cookiefile = str(cache_path)
+                else:
+                    cookies_browser = csrc
 
-    workers = IntPrompt.ask(cfg.prompt_label("workers"), default=int(ui["workers_default"]))
+    if use_prev and last_session:
+        workers = int(last_session.get("workers", ui["workers_default"]))
+    else:
+        workers = IntPrompt.ask(cfg.prompt_label("workers"), default=int(ui["workers_default"]))
     workers = max(int(ui["workers_min"]), min(workers, int(ui["workers_max"])))
 
     hx = cfg.h
@@ -227,20 +276,35 @@ def run():
     delete_chunks = bool(hx["delete_chunks_default"])
     ffmpeg_cuda_mode = str(hx.get("ffmpeg_use_cuda", "auto"))
     if hstream_urls:
-        quality = Prompt.ask(cfg.prompt_label("hstream_quality"), choices=list(ui["quality_choices"]), default=str(ui["quality_default"]))
-        fmt = Prompt.ask(cfg.prompt_label("hstream_format"), choices=list(ui["format_choices"]), default=str(ui["format_default"]))
-        if browser_utils.YTDLP_AVAILABLE:
-            method = Prompt.ask(cfg.prompt_label("hstream_method"), choices=list(ui["hstream_method_choices"]), default=str(ui["hstream_method_default"]))
-            prefer_ytdlp = method == "ytdlp"
-        use_browser = browser_utils.SELENIUM_AVAILABLE and Confirm.ask(cfg.prompt_label("hstream_browser"), default=bool(hx["use_browser_default"]))
-        delete_chunks = Confirm.ask(cfg.prompt_label("delete_chunks"), default=bool(hx["delete_chunks_default"]))
-        ffmpeg_cuda_mode = Prompt.ask(
-            cfg.prompt_label("hstream_cuda"),
-            choices=list(ui.get("hstream_cuda_choices", ["auto", "cpu", "cuda"])),
-            default=str(ui.get("hstream_cuda_default", ffmpeg_cuda_mode)),
-        )
+        if use_prev and last_session:
+            quality = str(last_session.get("quality", ui["quality_default"]))
+            if quality not in set(ui["quality_choices"]):
+                quality = str(ui["quality_default"])
+            fmt = str(last_session.get("format", ui["format_default"]))
+            if fmt not in set(ui["format_choices"]):
+                fmt = str(ui["format_default"])
+            prefer_ytdlp = bool(last_session.get("prefer_ytdlp", prefer_ytdlp))
+            use_browser = browser_utils.SELENIUM_AVAILABLE and bool(last_session.get("use_browser", use_browser))
+            delete_chunks = bool(last_session.get("delete_chunks", delete_chunks))
+            ffmpeg_cuda_mode = str(last_session.get("ffmpeg_cuda_mode", ffmpeg_cuda_mode))
+        else:
+            quality = Prompt.ask(cfg.prompt_label("hstream_quality"), choices=list(ui["quality_choices"]), default=str(ui["quality_default"]))
+            fmt = Prompt.ask(cfg.prompt_label("hstream_format"), choices=list(ui["format_choices"]), default=str(ui["format_default"]))
+            if browser_utils.YTDLP_AVAILABLE:
+                method = Prompt.ask(cfg.prompt_label("hstream_method"), choices=list(ui["hstream_method_choices"]), default=str(ui["hstream_method_default"]))
+                prefer_ytdlp = method == "ytdlp"
+            use_browser = browser_utils.SELENIUM_AVAILABLE and Confirm.ask(cfg.prompt_label("hstream_browser"), default=bool(hx["use_browser_default"]))
+            delete_chunks = Confirm.ask(cfg.prompt_label("delete_chunks"), default=bool(hx["delete_chunks_default"]))
+            ffmpeg_cuda_mode = Prompt.ask(
+                cfg.prompt_label("hstream_cuda"),
+                choices=list(ui.get("hstream_cuda_choices", ["auto", "cpu", "cuda"])),
+                default=str(ui.get("hstream_cuda_default", ffmpeg_cuda_mode)),
+            )
 
-    generic_out = str(Prompt.ask(cfg.prompt_label("generic_output_dir"), default=str(cfg.g["output_dir_default"])))
+    if use_prev and last_session:
+        generic_out = str(last_session.get("generic_out", cfg.g["output_dir_default"]))
+    else:
+        generic_out = str(Prompt.ask(cfg.prompt_label("generic_output_dir"), default=str(cfg.g["output_dir_default"])))
     sp = r.get("setup_panel", {})
     rl = ui.get("recap_labels", {})
     rv = ui.get("recap_values", {})
@@ -305,6 +369,7 @@ def run():
     ok_list: list[str] = []
     fail_list: list[tuple[str, str]] = []
     failed_urls: list[str] = []
+    success_urls: list[str] = []
     results_lock = threading.Lock()
     t0 = time.time()
 
@@ -344,6 +409,7 @@ def run():
                     with results_lock:
                         state.mark_done(url, str(existing))
                         ok_list.append(vname[:ok_tmax])
+                        success_urls.append(url)
                         progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
                     return
                 state.mark_start(url, short)
@@ -359,6 +425,7 @@ def run():
                             dst = move_to_videos(cfg, vname, fmt)
                             state.mark_done(url, str(dst or result))
                             ok_list.append(vname)
+                            success_urls.append(url)
                             progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
                         else:
                             state.mark_failed(url, str(result))
@@ -378,6 +445,7 @@ def run():
                     with results_lock:
                         if gok:
                             ok_list.append(gmsg[:ok_tmax])
+                            success_urls.append(url)
                             progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
                         else:
                             fail_list.append((short, gmsg))
@@ -444,11 +512,33 @@ def run():
     cfg.failed_links_file.write_text("\n".join(unique_failed), "utf-8")
     if unique_failed:
         console.print(f"[yellow]Failed links saved:[/] [bold]{cfg.failed_links_file}[/]")
+    seen_ok: set[str] = set()
+    unique_success = [u for u in success_urls if not (u in seen_ok or seen_ok.add(u))]
+    cfg.success_links_file.write_text("\n".join(unique_success), "utf-8")
+    if unique_success:
+        console.print(f"[green]Success links saved:[/] [bold]{cfg.success_links_file}[/]")
     if ok_list and hstream_urls:
         console.print(cfg.text("summary", "hstream_saved", path=str(cfg.videos_dir)))
     if ok_list and generic_urls:
         console.print(cfg.text("summary", "generic_saved", path=generic_out))
     console.print()
+    _save_last_session(
+        cfg,
+        {
+            "mode": mode,
+            "use_proxy": bool(proxy),
+            "cookiefile": cookiefile or "",
+            "cookies_browser": cookies_browser or "",
+            "workers": workers,
+            "quality": quality,
+            "format": fmt,
+            "prefer_ytdlp": bool(prefer_ytdlp),
+            "use_browser": bool(use_browser),
+            "delete_chunks": bool(delete_chunks),
+            "ffmpeg_cuda_mode": ffmpeg_cuda_mode,
+            "generic_out": generic_out,
+        },
+    )
 
 
 def run_with_interrupt_handling():

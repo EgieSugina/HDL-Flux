@@ -87,8 +87,10 @@
     "downloads_subdir": "downloads",
     "videos_subdir": "videos",
     "state_file": ".download_state.json",
+    "last_session_file": ".last_session.json",
     "list_file": "list.txt",
     "failed_links_file": "failed_links.txt",
+    "success_links_file": "link_succsess.txt",
     "credentials_file": ".credentials.json",
     "cookies_file": ".cookies.txt",
     "cookies_cache_file": ".cookies_cache.txt",
@@ -117,6 +119,7 @@
     "resume_action_default": "resume",
     "prompts": {
       "mode": "Mode",
+      "use_previous_session": "Use previous session settings?",
       "action": "Action",
       "proxy": "Use proxy [cyan]{url}[/]",
       "cookie_source": "Cookie source",

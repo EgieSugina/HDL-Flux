@@ -51,8 +51,10 @@ def _apply_hdl_env_overrides(data: dict) -> None:
         ("HDL_PATHS_DOWNLOADS_SUBDIR", ("paths", "downloads_subdir")),
         ("HDL_PATHS_VIDEOS_SUBDIR", ("paths", "videos_subdir")),
         ("HDL_PATHS_STATE_FILE", ("paths", "state_file")),
+        ("HDL_PATHS_LAST_SESSION_FILE", ("paths", "last_session_file")),
         ("HDL_PATHS_LIST_FILE", ("paths", "list_file")),
         ("HDL_PATHS_FAILED_LINKS_FILE", ("paths", "failed_links_file")),
+        ("HDL_PATHS_SUCCESS_LINKS_FILE", ("paths", "success_links_file")),
         ("HDL_PATHS_CREDENTIALS_FILE", ("paths", "credentials_file")),
         ("HDL_PATHS_COOKIES_FILE", ("paths", "cookies_file")),
         ("HDL_PATHS_COOKIES_CACHE_FILE", ("paths", "cookies_cache_file")),
@@ -104,8 +106,10 @@ class AppConfig:
         self.downloads_dir = root / p["downloads_subdir"]
         self.videos_dir = root / p["videos_subdir"]
         self.state_file = root / p["state_file"]
+        self.last_session_file = root / p.get("last_session_file", ".last_session.json")
         self.list_file = root / p["list_file"]
         self.failed_links_file = root / p.get("failed_links_file", "failed_links.txt")
+        self.success_links_file = root / p.get("success_links_file", "link_succsess.txt")
         self.credentials_file = root / p["credentials_file"]
         self.cookies_file = root / p["cookies_file"]
         self.cookies_cache_file = root / p["cookies_cache_file"]
