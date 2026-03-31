@@ -438,7 +438,9 @@ class HStreamDownloader:
         if on_status:
             on_status(f"chunks downloading {total} segments")
         done_count = 0
+        processed_count = 0
         failed = []
+        status_step = max(1, total // 10)
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {}
             for num, path in chunk_list:
@@ -447,21 +449,33 @@ class HStreamDownloader:
                 futs[pool.submit(self._download_chunk, url, fp)] = (num, url, fp)
             for fut in as_completed(futs):
                 num, url, fp = futs[fut]
+                processed_count += 1
                 if fut.result():
                     done_count += 1
                 else:
                     failed.append((num, url, fp))
                 if on_progress and total:
-                    on_progress(done_count / total * 80)
+                    # 0..70%: progress over primary chunk processing.
+                    on_progress(processed_count / total * 70)
+                if on_status and processed_count % status_step == 0:
+                    on_status(f"chunks processed {processed_count}/{total} (ok {done_count})")
+        retried = 0
+        failed_total = len(failed)
         for num, url, fp in failed:
             if self._download_chunk(url, fp, retries=rfail):
                 done_count += 1
+            retried += 1
+            if on_progress and failed_total:
+                # 70..90%: progress over retry pass.
+                on_progress(70 + (retried / failed_total * 20))
         if on_status and failed:
             on_status(f"chunks recovered {done_count}/{total}")
         if done_count < total * ratio:
             return False, self.cfg.h_msg("chunks_missing_template", missing=total - done_count, total=total)
         if on_status:
             on_status("chunks converting with ffmpeg")
+        if on_progress:
+            on_progress(92)
         ok, result = self._convert_chunks(workdir, name)
         if on_progress:
             on_progress(100)
@@ -661,6 +675,10 @@ class HStreamDownloader:
             if ok:
                 out = self._find_video(workdir, name)
                 return True, name, out or workdir
+            if on_status:
+                on_status("yt-dlp failed")
+            # When yt-dlp mode is selected, do not fallback to chunks.
+            return False, name, err or self.cfg.h_msg("ytdlp_output_too_small")
         last_err = ""
         for attempt in range(1, self.max_retries + 1):
             if on_status and attempt == 1:

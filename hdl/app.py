@@ -454,15 +454,22 @@ def run():
             padding=(0, 1),
         )
 
-    live_ref: dict[str, Live | None] = {"live": None}
-
     def log_event(msg: str, style: str = "dim"):
         ts = datetime.now().strftime("%H:%M:%S")
         with log_lock:
             recent_logs.append(f"[{style}]{ts} {msg}[/]")
-        live = live_ref["live"]
-        if live is not None:
-            live.update(Group(progress, render_logs_panel()), refresh=True)
+        # Do not call Live.update() from worker threads: it races with Live's
+        # own refresh and duplicates the Progress table on some terminals.
+
+    class _DownloadLiveLayout:
+        __slots__ = ("progress", "_logs")
+
+        def __init__(self, progress: Progress, render_logs_panel_fn):
+            self.progress = progress
+            self._logs = render_logs_panel_fn
+
+        def __rich__(self):
+            return Group(self.progress, self._logs())
 
     progress = Progress(
         SpinnerColumn(),
@@ -475,159 +482,158 @@ def run():
         expand=False,
         auto_refresh=False,
     )
+    _layout = _DownloadLiveLayout(progress, render_logs_panel)
     with Live(
-        Group(progress, render_logs_panel()),
+        _layout,
         console=console,
         refresh_per_second=max(log_rps, 2),
+        screen=True,
         transient=False,
-    ) as live:
-        live_ref["live"] = live
-        progress.start()
-        try:
-            overall = progress.add_task(
-                f"[cyan]{ov_lbl}  [0/{len(urls)}]",
-                total=len(urls),
-                transfer="[dim]-[/]",
-            )
-            log_event(f"Download session started ({len(urls)} URLs).", "cyan")
+    ):
+        # Do not call progress.start()/stop() here: Progress inside Live must only
+        # be rendered by Live. start() enables Progress's own live writer and
+        # duplicates the task table (above + below the log panel).
+        overall = progress.add_task(
+            f"[cyan]{ov_lbl}  [0/{len(urls)}]",
+            total=len(urls),
+            transfer="[dim]-[/]",
+        )
+        log_event(f"Download session started ({len(urls)} URLs).", "cyan")
 
-            def run_one(url: str):
-                if stop_event.is_set():
+        def run_one(url: str):
+            if stop_event.is_set():
+                return
+            short = url.rstrip("/").split("/")[-1][:tmax]
+            task = progress.add_task(f"  {short}", total=100, transfer="[dim]-[/]")
+            is_hstream = routing.is_hstream_url(url, cfg)
+            log_event(f"Start: {short}", "dim")
+            retry_status = ""
+            last_progress_log_ts = 0.0
+            last_progress_bucket = -1
+            if is_hstream:
+                vname = routing.hstream_video_name_from_url(url, cfg)
+                existing = routing.find_existing_hstream_video(cfg, vname, fmt)
+                if existing is not None:
+                    with results_lock:
+                        state.mark_done(url, str(existing))
+                        ok_list.append(vname[:ok_tmax])
+                        success_urls.append(url)
+                        progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
+                        n = len(ok_list) + len(fail_list)
+                    progress.update(
+                        overall,
+                        completed=n,
+                        description=f"[cyan]{ov_lbl}  [{n}/{len(urls)}]",
+                    )
+                    progress.remove_task(task)
+                    log_event(f"Skip existing: {short}", "green")
                     return
-                short = url.rstrip("/").split("/")[-1][:tmax]
-                task = progress.add_task(f"  {short}", total=100, transfer="[dim]-[/]")
-                is_hstream = routing.is_hstream_url(url, cfg)
-                log_event(f"Start: {short}", "dim")
-                retry_status = ""
-                last_progress_log_ts = 0.0
-                last_progress_bucket = -1
-                if is_hstream:
-                    vname = routing.hstream_video_name_from_url(url, cfg)
-                    existing = routing.find_existing_hstream_video(cfg, vname, fmt)
-                    if existing is not None:
-                        with results_lock:
-                            state.mark_done(url, str(existing))
-                            ok_list.append(vname[:ok_tmax])
+                state.mark_start(url, short)
+
+            def on_progress(pct):
+                nonlocal last_progress_log_ts, last_progress_bucket
+                desc = f"  {short}"
+                if retry_status:
+                    desc += f" [yellow]({retry_status})[/]"
+                progress.update(task, completed=min(pct, cap_pct), description=desc)
+                bucket = int(pct // 10)
+                now = time.time()
+                if bucket > last_progress_bucket and (bucket % 2 == 0):
+                    last_progress_bucket = bucket
+                    last_progress_log_ts = now
+                    log_event(f"{short}: progress {pct:.1f}%", "cyan")
+                elif now - last_progress_log_ts >= 12 and pct > 0:
+                    last_progress_log_ts = now
+                    log_event(f"{short}: still running ({pct:.1f}%)", "blue")
+
+            def on_status(msg: str):
+                nonlocal retry_status
+                retry_status = msg
+                progress.update(
+                    task,
+                    description=f"  {short} [yellow]({retry_status})[/]",
+                )
+                log_event(f"{short}: {msg}", "yellow")
+
+            def on_transfer(downloaded, total, speed=None):
+                size_txt = f"{_fmt_bytes(downloaded)}/{_fmt_bytes(total)}" if total else f"{_fmt_bytes(downloaded)}/?"
+                if speed:
+                    size_txt = f"{size_txt} @ {_fmt_bytes(speed)}/s"
+                progress.update(task, transfer=size_txt)
+
+            try:
+                if is_hstream and hs:
+                    ok, vname, result = hs.download_one(
+                        url,
+                        on_progress,
+                        on_status=on_status,
+                        on_transfer=on_transfer,
+                    )
+                    with results_lock:
+                        if ok:
+                            dst = move_to_videos(cfg, vname, fmt)
+                            state.mark_done(url, str(dst or result))
+                            ok_list.append(vname)
                             success_urls.append(url)
                             progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
-                            n = len(ok_list) + len(fail_list)
-                        progress.update(
-                            overall,
-                            completed=n,
-                            description=f"[cyan]{ov_lbl}  [{n}/{len(urls)}]",
-                        )
-                        progress.remove_task(task)
-                        log_event(f"Skip existing: {short}", "green")
-                        return
-                    state.mark_start(url, short)
-
-                def on_progress(pct):
-                    nonlocal last_progress_log_ts, last_progress_bucket
-                    desc = f"  {short}"
-                    if retry_status:
-                        desc += f" [yellow]({retry_status})[/]"
-                    progress.update(task, completed=min(pct, cap_pct), description=desc)
-                    bucket = int(pct // 10)
-                    now = time.time()
-                    if bucket > last_progress_bucket and (bucket % 2 == 0):
-                        last_progress_bucket = bucket
-                        last_progress_log_ts = now
-                        log_event(f"{short}: progress {pct:.1f}%", "cyan")
-                    elif now - last_progress_log_ts >= 12 and pct > 0:
-                        last_progress_log_ts = now
-                        log_event(f"{short}: still running ({pct:.1f}%)", "blue")
-
-                def on_status(msg: str):
-                    nonlocal retry_status
-                    retry_status = msg
-                    progress.update(
-                        task,
-                        description=f"  {short} [yellow]({retry_status})[/]",
+                            log_event(f"HStream OK: {short}", "green")
+                        else:
+                            state.mark_failed(url, str(result))
+                            fail_list.append((short, str(result)[:err_show]))
+                            failed_urls.append(url)
+                            progress.update(task, description=f"  {fail_pfx} {short}")
+                            log_event(f"HStream FAIL: {short} -> {str(result)[:90]}", "red")
+                else:
+                    gok, gmsg = generic_downloader.download_generic_video(
+                        cfg,
+                        url,
+                        generic_out,
+                        on_progress,
+                        proxy=proxy,
+                        cookiefile=cookiefile,
+                        cookies_browser=cookies_browser,
+                        on_status=on_status,
+                        on_transfer=on_transfer,
                     )
-                    log_event(f"{short}: {msg}", "yellow")
+                    with results_lock:
+                        if gok:
+                            ok_list.append(gmsg[:ok_tmax])
+                            success_urls.append(url)
+                            progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
+                            log_event(f"Generic OK: {short}", "green")
+                        else:
+                            fail_list.append((short, gmsg))
+                            failed_urls.append(url)
+                            progress.update(task, description=f"  {fail_pfx} {short}")
+                            log_event(f"Generic FAIL: {short} -> {str(gmsg)[:90]}", "red")
+            except Exception as exc:
+                with results_lock:
+                    if is_hstream:
+                        state.mark_failed(url, str(exc))
+                    fail_list.append((short, str(exc)[:err_show]))
+                    failed_urls.append(url)
+                    progress.update(task, description=f"  {fail_pfx} {short}")
+                log_event(f"Exception: {short} -> {str(exc)[:90]}", "red")
+            finally:
+                with results_lock:
+                    n = len(ok_list) + len(fail_list)
+                progress.update(overall, completed=n, description=f"[cyan]{ov_lbl}  [{n}/{len(urls)}]")
+                progress.remove_task(task)
+                if bt_sleep > 0:
+                    time.sleep(bt_sleep)
 
-                def on_transfer(downloaded, total, speed=None):
-                    size_txt = f"{_fmt_bytes(downloaded)}/{_fmt_bytes(total)}" if total else f"{_fmt_bytes(downloaded)}/?"
-                    if speed:
-                        size_txt = f"{size_txt} @ {_fmt_bytes(speed)}/s"
-                    progress.update(task, transfer=size_txt)
-
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {pool.submit(run_one, u): u for u in urls}
+            for fut in as_completed(futs):
                 try:
-                    if is_hstream and hs:
-                        ok, vname, result = hs.download_one(
-                            url,
-                            on_progress,
-                            on_status=on_status,
-                            on_transfer=on_transfer,
-                        )
-                        with results_lock:
-                            if ok:
-                                dst = move_to_videos(cfg, vname, fmt)
-                                state.mark_done(url, str(dst or result))
-                                ok_list.append(vname)
-                                success_urls.append(url)
-                                progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
-                                log_event(f"HStream OK: {short}", "green")
-                            else:
-                                state.mark_failed(url, str(result))
-                                fail_list.append((short, str(result)[:err_show]))
-                                failed_urls.append(url)
-                                progress.update(task, description=f"  {fail_pfx} {short}")
-                                log_event(f"HStream FAIL: {short} -> {str(result)[:90]}", "red")
-                    else:
-                        gok, gmsg = generic_downloader.download_generic_video(
-                            cfg,
-                            url,
-                            generic_out,
-                            on_progress,
-                            proxy=proxy,
-                            cookiefile=cookiefile,
-                            cookies_browser=cookies_browser,
-                            on_status=on_status,
-                            on_transfer=on_transfer,
-                        )
-                        with results_lock:
-                            if gok:
-                                ok_list.append(gmsg[:ok_tmax])
-                                success_urls.append(url)
-                                progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
-                                log_event(f"Generic OK: {short}", "green")
-                            else:
-                                fail_list.append((short, gmsg))
-                                failed_urls.append(url)
-                                progress.update(task, description=f"  {fail_pfx} {short}")
-                                log_event(f"Generic FAIL: {short} -> {str(gmsg)[:90]}", "red")
-                except Exception as exc:
-                    with results_lock:
-                        if is_hstream:
-                            state.mark_failed(url, str(exc))
-                        fail_list.append((short, str(exc)[:err_show]))
-                        failed_urls.append(url)
-                        progress.update(task, description=f"  {fail_pfx} {short}")
-                    log_event(f"Exception: {short} -> {str(exc)[:90]}", "red")
-                finally:
-                    with results_lock:
-                        n = len(ok_list) + len(fail_list)
-                    progress.update(overall, completed=n, description=f"[cyan]{ov_lbl}  [{n}/{len(urls)}]")
-                    progress.remove_task(task)
-                    if bt_sleep > 0:
-                        time.sleep(bt_sleep)
-
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = {pool.submit(run_one, u): u for u in urls}
-                for fut in as_completed(futs):
-                    try:
-                        fut.result()
-                    except KeyboardInterrupt:
-                        stop_event.set()
-                        for pending in futs:
-                            pending.cancel()
-                        raise
-                    except Exception:
-                        pass
-        finally:
-            progress.stop()
-
+                    fut.result()
+                except KeyboardInterrupt:
+                    stop_event.set()
+                    for pending in futs:
+                        pending.cancel()
+                    raise
+                except Exception:
+                    pass
     if hs:
         hs.close_browser()
 
