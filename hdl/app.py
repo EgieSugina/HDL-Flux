@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
+import http.client
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,6 +44,32 @@ except ImportError:
 console = Console()
 
 
+_orig_unraisablehook = sys.unraisablehook
+
+
+def _suppress_httpresponse_finalize_error(unraisable):
+    """
+    Python 3.14 + urllib/yt-dlp can emit unraisable ValueError during
+    HTTPResponse finalization ("I/O operation on closed file"). Ignore only
+    that narrow case to avoid noisy stderr spam.
+    """
+    try:
+        obj = getattr(unraisable, "object", None)
+        exc = getattr(unraisable, "exc_value", None)
+        if (
+            isinstance(obj, http.client.HTTPResponse)
+            and isinstance(exc, ValueError)
+            and "I/O operation on closed file" in str(exc)
+        ):
+            return
+    except Exception:
+        pass
+    _orig_unraisablehook(unraisable)
+
+
+sys.unraisablehook = _suppress_httpresponse_finalize_error
+
+
 def _make_console(cfg) -> Console:
     r = cfg.ui.get("rich", {})
     return Console(
@@ -52,6 +80,18 @@ def _make_console(cfg) -> Console:
 
 def _box_named(name: str):
     return getattr(box, str(name).upper().replace("-", "_"), box.ROUNDED)
+
+
+def _fmt_bytes(n: float | int | None) -> str:
+    if not n:
+        return "0 B"
+    v = float(n)
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while v >= 1024 and i < len(units) - 1:
+        v /= 1024.0
+        i += 1
+    return f"{v:.1f} {units[i]}"
 
 
 def _load_last_session(cfg) -> dict | None:
@@ -363,7 +403,7 @@ def run():
             masked = creds[0][:nmask] + cfg.text("auth", "mask_suffix")
             console.print(cfg.text("auth", "logging_in", masked=masked))
             st = cfg.text("auth", "status")
-            spin = str(r.get("auth_spinner", "dots"))
+            spin = str(r.get("auth_spinner", "arrow3"))
             with console.status(f"[dim]{st}[/]", spinner=spin):
                 logged = hs.login(*creds)
             console.print(cfg.text("auth", "ok") if logged else cfg.text("auth", "fail_guest"))
@@ -429,6 +469,7 @@ def run():
         TextColumn("[bold]{task.description}"),
         BarColumn(bar_width=bw),
         TextColumn("[progress.percentage]{task.percentage:>5.1f}%"),
+        TextColumn("{task.fields[transfer]}", style="dim", justify="right"),
         TimeElapsedColumn(),
         console=console,
         expand=False,
@@ -443,14 +484,18 @@ def run():
         live_ref["live"] = live
         progress.start()
         try:
-            overall = progress.add_task(f"[cyan]{ov_lbl}  [0/{len(urls)}]", total=len(urls))
+            overall = progress.add_task(
+                f"[cyan]{ov_lbl}  [0/{len(urls)}]",
+                total=len(urls),
+                transfer="[dim]-[/]",
+            )
             log_event(f"Download session started ({len(urls)} URLs).", "cyan")
 
             def run_one(url: str):
                 if stop_event.is_set():
                     return
                 short = url.rstrip("/").split("/")[-1][:tmax]
-                task = progress.add_task(f"  {short}", total=100)
+                task = progress.add_task(f"  {short}", total=100, transfer="[dim]-[/]")
                 is_hstream = routing.is_hstream_url(url, cfg)
                 log_event(f"Start: {short}", "dim")
                 retry_status = ""
@@ -465,6 +510,13 @@ def run():
                             ok_list.append(vname[:ok_tmax])
                             success_urls.append(url)
                             progress.update(task, completed=100, description=f"  {ok_pfx} {short}")
+                            n = len(ok_list) + len(fail_list)
+                        progress.update(
+                            overall,
+                            completed=n,
+                            description=f"[cyan]{ov_lbl}  [{n}/{len(urls)}]",
+                        )
+                        progress.remove_task(task)
                         log_event(f"Skip existing: {short}", "green")
                         return
                     state.mark_start(url, short)
@@ -494,12 +546,19 @@ def run():
                     )
                     log_event(f"{short}: {msg}", "yellow")
 
+                def on_transfer(downloaded, total, speed=None):
+                    size_txt = f"{_fmt_bytes(downloaded)}/{_fmt_bytes(total)}" if total else f"{_fmt_bytes(downloaded)}/?"
+                    if speed:
+                        size_txt = f"{size_txt} @ {_fmt_bytes(speed)}/s"
+                    progress.update(task, transfer=size_txt)
+
                 try:
                     if is_hstream and hs:
                         ok, vname, result = hs.download_one(
                             url,
                             on_progress,
                             on_status=on_status,
+                            on_transfer=on_transfer,
                         )
                         with results_lock:
                             if ok:
@@ -525,6 +584,7 @@ def run():
                             cookiefile=cookiefile,
                             cookies_browser=cookies_browser,
                             on_status=on_status,
+                            on_transfer=on_transfer,
                         )
                         with results_lock:
                             if gok:
@@ -549,8 +609,9 @@ def run():
                     with results_lock:
                         n = len(ok_list) + len(fail_list)
                     progress.update(overall, completed=n, description=f"[cyan]{ov_lbl}  [{n}/{len(urls)}]")
-                    time.sleep(bt_sleep)
                     progress.remove_task(task)
+                    if bt_sleep > 0:
+                        time.sleep(bt_sleep)
 
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futs = {pool.submit(run_one, u): u for u in urls}

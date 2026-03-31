@@ -176,7 +176,7 @@
         "box_style": "ROUNDED",
         "inner_table_box": "SIMPLE"
       },
-      "auth_spinner": "dots",
+      "auth_spinner": "arrow3",
       "failures_panel": {
         "title": "Failed items",
         "border_style": "red",

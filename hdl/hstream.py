@@ -248,7 +248,16 @@ class HStreamDownloader:
         lab = self.quality if self.quality in qmap else max(qmap.keys(), key=lambda z: int(z))
         return str(yd["format_height_template"]).format(h=lab)
 
-    def _download_ytdlp(self, page_url, mpd_url, name, workdir, on_progress, on_status=None):
+    def _download_ytdlp(
+        self,
+        page_url,
+        mpd_url,
+        name,
+        workdir,
+        on_progress,
+        on_status=None,
+        on_transfer=None,
+    ):
         h = self.cfg.h
         # Prefer MPD directly for hstream; page URLs are often unsupported by yt-dlp.
         urls_to_try = [u for u in (mpd_url, page_url) if u]
@@ -294,8 +303,13 @@ class HStreamDownloader:
                                 got = d.get("downloaded_bytes", 0)
                                 if tot > 0:
                                     _cb(got / tot * 100)
+                                if on_transfer:
+                                    on_transfer(got, tot, d.get("speed"))
                             elif d["status"] == "finished":
                                 _cb(100)
+                                if on_transfer:
+                                    fin = d.get("total_bytes") or d.get("downloaded_bytes", 0)
+                                    on_transfer(fin, fin, d.get("speed"))
 
                         ydl_opts["progress_hooks"] = [_hook]
                     if self.fmt in self.cfg.h["container_formats_postprocess"]:
@@ -619,7 +633,7 @@ class HStreamDownloader:
                 except OSError:
                     pass
 
-    def download_one(self, page_url, on_progress=None, on_status=None):
+    def download_one(self, page_url, on_progress=None, on_status=None, on_transfer=None):
         name = routing.hstream_video_name_from_url(page_url, self.cfg)
         workdir = str(self.cfg.downloads_dir / name)
         os.makedirs(workdir, exist_ok=True)
@@ -642,6 +656,7 @@ class HStreamDownloader:
                 workdir,
                 on_progress,
                 on_status=on_status,
+                on_transfer=on_transfer,
             )
             if ok:
                 out = self._find_video(workdir, name)

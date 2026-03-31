@@ -97,6 +97,7 @@ def download_generic_video(
     max_retries: int | None = None,
     retry_delay: int | None = None,
     on_status=None,
+    on_transfer=None,
 ) -> tuple[bool, str]:
     """Returns (ok, title_or_error)."""
     if yt_dlp is None:
@@ -109,8 +110,16 @@ def download_generic_video(
             got = d.get("downloaded_bytes", 0)
             pct = (got / tot * 100) if tot > 0 else 0
             on_progress(pct)
+            if on_transfer:
+                on_transfer(got, tot, d.get("speed"))
         elif d["status"] == "finished":
             on_progress(100)
+            if on_transfer:
+                on_transfer(
+                    d.get("total_bytes") or d.get("downloaded_bytes", 0),
+                    d.get("total_bytes") or d.get("downloaded_bytes", 0),
+                    d.get("speed"),
+                )
 
     g = cfg.g
     mr = int(max_retries if max_retries is not None else g["max_retries"])
