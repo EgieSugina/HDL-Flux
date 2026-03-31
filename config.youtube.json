@@ -1,0 +1,48 @@
+{
+  "readme": "YouTube-only profile (merged over config.defaults.json). Run: HDL_CONFIG=config.youtube.json python3 unified_downloader.py — create list.youtube.txt with one URL per line (youtube.com, youtu.be, music.youtube.com).",
+  "paths": {
+    "list_file": "list.youtube.txt",
+    "state_file": ".download_state_youtube.json",
+    "cookies_cache_file": ".cookies_cache_youtube.txt"
+  },
+  "ui": {
+    "mode_choices": ["generic"],
+    "mode_default": "generic",
+    "rich": {
+      "banner": {
+        "title_primary": "YOUTUBE",
+        "title_secondary": " DOWNLOADER",
+        "subtitle_template": "[dim]generic yt-dlp  ·  default browser: [cyan]{browser}[/]  ·  list: [yellow]list.youtube.txt[/][/dim]"
+      },
+      "rules": {
+        "setup": "[bold red]YouTube — Setup[/]",
+        "session": "[bold red]YouTube — Session[/]",
+        "download": "[bold red]YouTube — Download[/]",
+        "results": "[bold red]YouTube — Results[/]"
+      },
+      "setup_panel": {
+        "title": "YouTube — Ready"
+      }
+    }
+  },
+  "hstream": {
+    "url_markers": [],
+    "list_filter_substring": ""
+  },
+  "generic": {
+    "output_dir_default": "youtube",
+    "format": "bv*+ba/bestvideo*+bestaudio/bestvideo+bestaudio/best",
+    "format_fallbacks": ["best/worst", "worst"],
+    "outtmpl": "%(title)s [%(id)s].%(ext)s",
+    "site_host_keywords": {
+      "youtube": ["youtube", "youtu.be", "music.youtube.com"]
+    },
+    "site_referers": {
+      "youtube": "https://www.youtube.com/"
+    },
+    "cookie_export_probe_urls": [
+      "https://www.youtube.com/",
+      "https://www.youtube.com/robots.txt"
+    ]
+  }
+}

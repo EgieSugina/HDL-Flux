@@ -1,0 +1,27 @@
+# Virtual environments
+.venv/
+venv/
+myenv/
+
+# Python build/cache artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Runtime output
+downloads*/
+videos/
+logs/
+
+# Local input/state
+list.txt
+.download_state.json
+failed_links.txt
+
+# Secrets / local auth
+.env
+.credentials.json
+.cookies.txt
+.cookies_cache.txt
