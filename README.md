@@ -11,6 +11,10 @@
   <img src="https://img.shields.io/badge/license-use%20responsibly-9cf?style=flat-square" alt="License">
 </p>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/EgieSugina/HDL-Flux/refs/heads/main/screenshot/Screenshot_20260401_151008.png" alt="HDL Flux Screenshot">
+</p>
+
 ---
 
 ## Apa ini?
