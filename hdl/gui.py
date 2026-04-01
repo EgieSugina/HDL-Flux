@@ -350,7 +350,7 @@ class DownloadWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HDL Flux GUI")
+        self.setWindowTitle("HDL Flux By Jembut Kecelup Santan")
         self.resize(1000, 720)
         icon_path = SCRIPT_DIR / "icon.png"
         if not icon_path.is_file() and getattr(sys, "frozen", False):

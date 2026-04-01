@@ -33,30 +33,26 @@ jobs:
       - name: Build singlefile binaries
         run: python build_singlefile.py
 
-      - name: Package artifacts (Unix)
+      - name: Prepare artifacts (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p release
-          cp dist/hdl-flux-cli release/
-          cp dist/hdl-flux-gui release/
-          tar -czf "hdl-flux-${{ runner.os }}-${{ runner.arch }}.tar.gz" -C release .
+          cp dist/hdl-flux-cli "release/hdl-flux-cli-${{ runner.os }}-${{ runner.arch }}"
+          cp dist/hdl-flux-gui "release/hdl-flux-gui-${{ runner.os }}-${{ runner.arch }}"
 
-      - name: Package artifacts (Windows)
+      - name: Prepare artifacts (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Copy-Item dist/hdl-flux-cli.exe release/
-          Copy-Item dist/hdl-flux-gui.exe release/
-          Compress-Archive -Path release/* -DestinationPath "hdl-flux-${{ runner.os }}-${{ runner.arch }}.zip" -Force
+          Copy-Item dist/hdl-flux-cli.exe "release/hdl-flux-cli-${{ runner.os }}-${{ runner.arch }}.exe"
+          Copy-Item dist/hdl-flux-gui.exe "release/hdl-flux-gui-${{ runner.os }}-${{ runner.arch }}.exe"
 
-      - name: Upload packaged artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: packaged-${{ matrix.os }}
-          path: |
-            hdl-flux-*.tar.gz
-            hdl-flux-*.zip
+          name: binaries-${{ matrix.os }}
+          path: release/*
 
   release:
     name: Publish GitHub Release
@@ -73,8 +69,6 @@ jobs:
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            out/**/*.tar.gz
-            out/**/*.zip
+          files: out/**/*
           generate_release_notes: true
 
