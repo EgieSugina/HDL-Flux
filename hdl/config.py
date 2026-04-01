@@ -5,9 +5,19 @@ import json
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent.parent
+
+def _runtime_root() -> Path:
+    # PyInstaller onefile: prefer folder of executable for user-editable config,
+    # but keep bundled resources in _MEIPASS as fallback.
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+SCRIPT_DIR = _runtime_root()
 
 
 def load_json_file(path: Path) -> dict:
@@ -193,6 +203,11 @@ def load_config(script_dir: Path | None = None) -> AppConfig:
     script_dir = script_dir or SCRIPT_DIR
     load_dotenv_simple(script_dir / ".env")
     defaults_path = script_dir / "config.defaults.json"
+    if not defaults_path.is_file() and getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", ""))
+        mp_defaults = meipass / "config.defaults.json"
+        if mp_defaults.is_file():
+            defaults_path = mp_defaults
     if not defaults_path.is_file():
         raise FileNotFoundError(
             "Missing {name} next to the script (required defaults).".format(

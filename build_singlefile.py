@@ -57,6 +57,8 @@ def main() -> int:
             "--noconfirm",
             "--clean",
             "--onefile",
+            "--add-data",
+            "config.defaults.json:.",
             "--name",
             "hdl-flux-cli",
             "serve.py",
@@ -68,6 +70,8 @@ def main() -> int:
         "--noconfirm",
         "--clean",
         "--onefile",
+        "--add-data",
+        "config.defaults.json:.",
         "--name",
         "hdl-flux-gui",
     ]
