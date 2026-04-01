@@ -1,0 +1,80 @@
+name: Build And Release Singlefile
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build singlefile binaries
+        run: python build_singlefile.py
+
+      - name: Package artifacts (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p release
+          cp dist/hdl-flux-cli release/
+          cp dist/hdl-flux-gui release/
+          tar -czf "hdl-flux-${{ runner.os }}-${{ runner.arch }}.tar.gz" -C release .
+
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item dist/hdl-flux-cli.exe release/
+          Copy-Item dist/hdl-flux-gui.exe release/
+          Compress-Archive -Path release/* -DestinationPath "hdl-flux-${{ runner.os }}-${{ runner.arch }}.zip" -Force
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-${{ matrix.os }}
+          path: |
+            hdl-flux-*.tar.gz
+            hdl-flux-*.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: out
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/**/*.tar.gz
+            out/**/*.zip
+          generate_release_notes: true
+

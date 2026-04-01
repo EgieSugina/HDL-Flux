@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>HDL Flux · Unified Downloader</strong><br>
-  <sub>Rich CLI · JSON config · Linux & Windows</sub>
+  <sub>Rich CLI + PySide6 GUI · JSON config · Linux / Windows / macOS</sub>
 </p>
 
 <p align="center">
@@ -20,6 +20,7 @@ CLI downloader modular untuk:
 - **HStream path** (MPD/chunks, login Selenium, resume state)
 - **Generic path** via **yt-dlp** (multi-site)
 - UI interaktif berbasis **Rich**
+- GUI desktop berbasis **PySide6**
 
 Konfigurasi utama ada di JSON + env (`config.defaults.json`, `config.json`, `.env`/`HDL_*`).
 
@@ -34,6 +35,8 @@ Konfigurasi utama ada di JSON + env (`config.defaults.json`, `config.json`, `.en
 | **YouTube** | `config.youtube.json` + `list.youtube.txt` — folder & state terpisah |
 | **Browser** | Default OS untuk Selenium & ekspor cookie yt-dlp |
 | **Start cepat** | `start.sh` / `start.bat` — buat `.venv`, `pip install`, jalankan app |
+| **GUI desktop** | `python gui.py` — mode `single/list`, progress tabel, speed/size per item |
+| **Singlefile build** | `python build_singlefile.py` — hasil `dist/hdl-flux-cli` + `dist/hdl-flux-gui` |
 
 ---
 
@@ -66,6 +69,21 @@ Script akan:
 2. Menginstal **`requirements.txt`** (idempotent, cepat jika sudah lengkap)  
 3. Menjalankan **`serve.py`**
 
+### 2b) Jalankan GUI
+
+```bash
+python3 gui.py
+```
+
+Fitur GUI:
+
+- Mode `single` / `list` (input tampil dinamis)
+- Output folder custom (default ke folder `Downloads` OS)
+- Tabel progress per URL: progress bar, size, speed, status
+- Tab `Config JSON` (edit semua config langsung)
+- Tab `Credentials` (edit `.credentials.json` langsung)
+- Skip otomatis URL hstream yang file targetnya sudah ada (status: already downloaded)
+
 ### 3) Siapkan URL
 
 - Default: salin **`list.txt.sample`** -> **`list.txt`**, isi satu URL per baris.
@@ -82,6 +100,7 @@ Script akan:
 | **Browser + driver** | Untuk hstream login / Selenium — biasanya **Selenium Manager** membantu |
 
 Dependensi Python: **`requirements.txt`** (`requests`, `rich`, `yt-dlp`, `selenium`).
+Untuk GUI: `PySide6`.
 
 ---
 
@@ -89,7 +108,8 @@ Dependensi Python: **`requirements.txt`** (`requests`, `rich`, `yt-dlp`, `seleni
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # fish: source .venv/bin/activate.fish
+# Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python3 serve.py
 ```
@@ -127,6 +147,35 @@ Core sekarang dipisah agar mudah maintain:
 - `hdl/generic_downloader.py`: generic yt-dlp pipeline
 - `hdl/routing.py`: URL classify + skip-existing checks
 - `hdl/state_manager.py`: state/resume handling
+- `hdl/gui.py`: desktop GUI runner + worker pipeline
+
+## Build singlefile executable
+
+Build lokal (current OS):
+
+```bash
+python3 build_singlefile.py
+```
+
+Output:
+
+- `dist/hdl-flux-cli` (atau `.exe`)
+- `dist/hdl-flux-gui` (atau `.exe`)
+
+Auto release GitHub:
+
+- Workflow: `.github/workflows/release-singlefile.yml`
+- Trigger otomatis saat push tag `v*` (contoh `v1.0.0`)
+- Assets release: paket singlefile Linux / Windows / macOS
+
+## Screenshot GUI
+
+Simpan screenshot di folder `screenshot/`, lalu referensikan di README.
+Contoh (aktifkan jika file sudah ada):
+
+```md
+![GUI Dashboard](screenshot/gui-dashboard.png)
+```
 
 ## Alur singkat
 

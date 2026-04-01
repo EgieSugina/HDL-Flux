@@ -1,5 +1,6 @@
 # Virtual environments
 .venv/
+.build-venv/
 venv/
 myenv/
 
@@ -9,11 +10,18 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 config.json
 # Runtime output
 downloads*/
 videos/
 logs/
+build/
+dist/
+*.spec
+release/
+*.tar.gz
+*.zip
 
 # Local input/state
 list.txt
