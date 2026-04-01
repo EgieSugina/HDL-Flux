@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,6 +17,7 @@ from hdl.state_manager import StateManager
 
 try:
     from PySide6.QtCore import QThread, Signal
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -348,8 +350,13 @@ class DownloadWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HDL Downloader by Jembut Kecelup Santan")
+        self.setWindowTitle("HDL Flux GUI")
         self.resize(1000, 720)
+        icon_path = SCRIPT_DIR / "icon.png"
+        if not icon_path.is_file() and getattr(sys, "frozen", False):
+            icon_path = Path(getattr(sys, "_MEIPASS", "")) / "icon.png"
+        if icon_path.is_file():
+            self.setWindowIcon(QIcon(str(icon_path)))
         self.worker: DownloadWorker | None = None
         self._rows: dict[str, int] = {}
         self.cfg = load_config()
