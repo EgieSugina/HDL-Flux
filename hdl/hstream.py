@@ -12,9 +12,10 @@ import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import unquote, urljoin
+from urllib.parse import unquote, urljoin, urlparse
 
 import requests
+from requests.utils import dict_from_cookiejar
 
 from hdl import cookiefile as cookiefile_util
 from hdl import page_media, routing
@@ -267,18 +268,19 @@ class HStreamDownloader:
 
     def _resolve_mpd_urls_via_api(
         self, html: str, page_url: str, on_status=None
-    ) -> tuple[dict[str, str], list[str], list[str]]:
+    ) -> tuple[dict[str, str], list[str], list[str], frozenset[str]]:
         """
         Resolve MPD candidates from /player/api using hidden input #e_id.
         Returns:
           - map quality->mpd_url
           - ordered mpd candidates (multi-domain)
           - subtitle urls from api payload
+          - hostnames from asia_stream_domains (for candidate ranking)
         """
         h = self.cfg.h
         eid = self._extract_episode_id(html)
         if not eid:
-            return {}, [], []
+            return {}, [], [], frozenset()
         api_url = h["base_url"].rstrip("/") + "/player/api"
         headers = {
             "Accept": "application/json, text/plain, */*",
@@ -302,16 +304,22 @@ class HStreamDownloader:
                 resp.raise_for_status()
                 data = resp.json()
             if not isinstance(data, dict):
-                return {}, [], []
+                return {}, [], [], frozenset()
             stream_url = str(data.get("stream_url", "")).strip().strip("/")
             domains: list[str] = []
-            for key in ("stream_domains", "asia_stream_domains"):
+            asia_hosts: set[str] = set()
+            for key in ("asia_stream_domains", "stream_domains"):
                 vals = data.get(key) or []
                 if isinstance(vals, list):
                     for d in vals:
                         dom = str(d).strip().rstrip("/")
-                        if dom and dom not in domains:
-                            domains.append(dom)
+                        if not dom or dom in domains:
+                            continue
+                        domains.append(dom)
+                        if key == "asia_stream_domains":
+                            host = urlparse(dom).netloc.lower()
+                            if host:
+                                asia_hosts.add(host)
             qkeys = sorted(
                 [str(k) for k in self._quality_res().keys()],
                 key=lambda z: int(z),
@@ -341,19 +349,27 @@ class HStreamDownloader:
                         sub_urls.append(u)
             if on_status and mpd_candidates:
                 on_status(f"player api found {len(mpd_candidates)} mpd candidate(s)")
-            return mpd_map, mpd_candidates, sub_urls
+            return mpd_map, mpd_candidates, sub_urls, frozenset(asia_hosts)
         except Exception:
-            return {}, [], []
+            return {}, [], [], frozenset()
 
-    def _rank_mpd_candidates(self, candidates: list[str], on_status=None) -> list[str]:
+    def _rank_mpd_candidates(
+        self,
+        candidates: list[str],
+        on_status=None,
+        *,
+        preferred_hosts: frozenset[str] | None = None,
+    ) -> list[str]:
         """
         Probe MPD candidates quickly and sort by latency.
-        Unreachable candidates are kept at the end (still usable as fallback).
+        When preferred_hosts is set (e.g. asia_stream_domains), those URLs are
+        tried before others with similar reachability. Unreachable candidates
+        are kept at the end (still usable as fallback).
         """
         if not candidates:
             return []
         req_t = max(1.0, min(float(self.cfg.h["request_timeout_sec"]), 6.0))
-        scored: list[tuple[float, str]] = []
+        scored: list[tuple[int, float, str]] = []
         if on_status and len(candidates) > 1:
             on_status(f"mpd health-check {len(candidates)} candidate(s)")
         for u in candidates:
@@ -365,9 +381,13 @@ class HStreamDownloader:
             except Exception:
                 ok = False
             dt = time.monotonic() - t0
-            scored.append((dt if ok else 9999.0, u))
-        scored.sort(key=lambda x: x[0])
-        ranked = [u for _, u in scored]
+            tier = 0
+            if preferred_hosts:
+                host = urlparse(u).netloc.lower()
+                tier = 0 if host in preferred_hosts else 1
+            scored.append((tier, dt if ok else 9999.0, u))
+        scored.sort(key=lambda x: (x[0], x[1]))
+        ranked = [u for _, _, u in scored]
         if on_status and ranked:
             on_status("mpd health-check done")
         return ranked
@@ -553,11 +573,16 @@ class HStreamDownloader:
                 if not ada.tag.endswith("AdaptationSet"):
                     continue
                 ctype = (ada.get("contentType", "") + ada.get("mimeType", "")).lower()
-                is_vid = "video" in ctype
+                # Some hstream manifests encode frame stream as image/webp chunks.
+                is_webp_image_track = "image" in ctype and ("webp" in ctype or "avif" in ctype)
+                is_vid = ("video" in ctype) or is_webp_image_track
                 is_aud = "audio" in ctype
                 for rep in ada:
                     if not rep.tag.endswith("Representation"):
                         continue
+                    rep_meta = (rep.get("mimeType", "") + rep.get("codecs", "")).lower()
+                    rep_is_vid = is_vid or ("video" in rep_meta) or ("webp" in rep_meta) or ("av1" in rep_meta) or ("vp8" in rep_meta) or ("vp9" in rep_meta)
+                    rep_is_aud = is_aud or ("audio" in rep_meta)
                     seg = None
                     for child in rep:
                         if child.tag.endswith("SegmentTemplate"):
@@ -600,9 +625,9 @@ class HStreamDownloader:
                         "bandwidth": rep_bw,
                         "height": rep_h,
                     }
-                    if is_vid:
+                    if rep_is_vid:
                         info["video"].append(entry)
-                    elif is_aud:
+                    elif rep_is_aud:
                         info["audio"].append(entry)
             if info["video"]:
                 info["video"].sort(
@@ -626,18 +651,46 @@ class HStreamDownloader:
         s = re.sub(r"\$Number%0(\d+)d\$", lambda m: f"{number:0{int(m.group(1))}d}", s)
         return s
 
-    def _download_chunk(self, url, filepath, retries=None) -> bool:
+    def _download_chunk(
+        self,
+        url,
+        filepath,
+        retries=None,
+        *,
+        req_headers: dict | None = None,
+        req_cookies: dict | None = None,
+        req_proxies: dict | None = None,
+    ) -> bool:
+        """
+        Download one segment. Uses thread-local ``requests.get`` when headers/cookies
+        are passed so parallel chunk workers do not share ``requests.Session`` (not
+        thread-safe; sharing caused stuck last segments under high concurrency).
+        """
         h = self.cfg.h
         if retries is None:
             retries = int(h["chunk_retry_default"])
         req_t = float(h["request_timeout_sec"])
+        connect_t = min(15.0, max(5.0, req_t * 0.25))
+        timeout = (connect_t, req_t)
         if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
             return True
+        use_shared_session = req_headers is None
         for _ in range(retries):
             try:
-                with self.session.get(url, timeout=req_t) as resp:
-                    resp.raise_for_status()
-                    content = resp.content
+                if use_shared_session:
+                    with self.session.get(url, timeout=timeout) as resp:
+                        resp.raise_for_status()
+                        content = resp.content
+                else:
+                    with requests.get(
+                        url,
+                        headers=req_headers,
+                        cookies=req_cookies or {},
+                        proxies=req_proxies if req_proxies else None,
+                        timeout=timeout,
+                    ) as resp:
+                        resp.raise_for_status()
+                        content = resp.content
                 if not content:
                     continue
                 os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -668,16 +721,33 @@ class HStreamDownloader:
         total = len(chunk_list)
         if on_status:
             on_status(f"chunks downloading {total} segments")
+        # Snapshot once: Session + CookieJar are not safe across many chunk threads
+        # (and multiple episodes in parallel each spawn their own pools).
+        req_headers = dict(self.session.headers)
+        req_cookies = dict_from_cookiejar(self.session.cookies)
+        req_proxies = dict(self.session.proxies) if self.session.proxies else None
         done_count = 0
         processed_count = 0
         failed = []
         status_step = max(1, total // 10)
+        chunk_kw = {
+            "req_headers": req_headers,
+            "req_cookies": req_cookies,
+            "req_proxies": req_proxies,
+        }
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {}
             for num, path in chunk_list:
                 url = urljoin(base, path)
                 fp = os.path.join(workdir, tmpl.format(num=num))
-                futs[pool.submit(self._download_chunk, url, fp)] = (num, url, fp)
+                futs[
+                    pool.submit(
+                        self._download_chunk,
+                        url,
+                        fp,
+                        **chunk_kw,
+                    )
+                ] = (num, url, fp)
             for fut in as_completed(futs):
                 num, url, fp = futs[fut]
                 processed_count += 1
@@ -693,7 +763,7 @@ class HStreamDownloader:
         retried = 0
         failed_total = len(failed)
         for num, url, fp in failed:
-            if self._download_chunk(url, fp, retries=rfail):
+            if self._download_chunk(url, fp, retries=rfail, **chunk_kw):
                 done_count += 1
             retried += 1
             if on_progress and failed_total:
@@ -943,11 +1013,12 @@ class HStreamDownloader:
                 on_status("page load failed")
             return False, name, self.cfg.h_msg("page_load_failed")
         mpd_urls = self._extract_mpd_urls(html)
-        api_mpd_map, api_mpd_candidates, api_subtitles = self._resolve_mpd_urls_via_api(
-            html, page_url, on_status=on_status
+        api_mpd_map, api_mpd_candidates, api_subtitles, api_asia_hosts = (
+            self._resolve_mpd_urls_via_api(html, page_url, on_status=on_status)
         )
+        # Player API is authoritative for CDN paths; do not let stale HTML regexes win.
         for q, u in api_mpd_map.items():
-            mpd_urls.setdefault(q, u)
+            mpd_urls[q] = u
         subtitle_urls = self._extract_subtitle_urls(html, page_url)
         for su in api_subtitles:
             if su not in subtitle_urls:
@@ -959,7 +1030,11 @@ class HStreamDownloader:
         for u in mpd_urls.values():
             if u not in mpd_all_candidates:
                 mpd_all_candidates.append(u)
-        mpd_all_candidates = self._rank_mpd_candidates(mpd_all_candidates, on_status=on_status)
+        mpd_all_candidates = self._rank_mpd_candidates(
+            mpd_all_candidates,
+            on_status=on_status,
+            preferred_hosts=api_asia_hosts if api_asia_hosts else None,
+        )
         if mpd_urls and on_status and page_src:
             on_status(f"mpd found via {page_src}")
         elif mpd_urls and on_status:
