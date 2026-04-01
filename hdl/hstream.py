@@ -12,7 +12,7 @@ import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin
 
 import requests
 
@@ -187,9 +187,190 @@ class HStreamDownloader:
         except OSError:
             pass
 
+    def _quality_from_url(self, url: str) -> str:
+        m = re.search(r"/(\d{3,4})/manifest\.mpd(?:[?#]|$)", url)
+        if m:
+            return m.group(1)
+        return "0"
+
     def _extract_mpd_urls(self, html: str) -> dict[str, str]:
-        pat = self.cfg.h["mpd_source_regex"]
-        return {size: url for url, size in re.findall(pat, html)}
+        """
+        Extract MPD URLs from page source.
+        Uses primary configured regex, then broader fallbacks so pages that
+        don't include `size=` still work.
+        """
+        out: dict[str, str] = {}
+        primary = str(self.cfg.h.get("mpd_source_regex", "")).strip()
+        if primary:
+            for url, size in re.findall(primary, html):
+                u = (url or "").strip()
+                s = str(size).strip() or self._quality_from_url(u)
+                if u:
+                    out[s] = u
+        # Fallback 1: any src/href ending with manifest.mpd
+        for m in re.finditer(
+            r'(?:\bsrc|\bhref)\s*=\s*["\']([^"\']+manifest\.mpd(?:\?[^"\']*)?)["\']',
+            html,
+            re.I,
+        ):
+            u = m.group(1).strip()
+            if not u:
+                continue
+            q = self._quality_from_url(u)
+            out.setdefault(q, u)
+        # Fallback 2: plain absolute URL in inline scripts
+        for m in re.finditer(
+            r'https?://[^\s"\'<>]+manifest\.mpd(?:\?[^\s"\'<>]*)?',
+            html,
+            re.I,
+        ):
+            u = m.group(0).strip()
+            if not u:
+                continue
+            q = self._quality_from_url(u)
+            out.setdefault(q, u)
+        return out
+
+    def _extract_subtitle_urls(self, html: str, page_url: str) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for m in re.finditer(
+            r'(?:\bsrc|\bhref)\s*=\s*["\']([^"\']+\.(?:ass|srt|vtt)(?:\?[^"\']*)?)["\']',
+            html,
+            re.I,
+        ):
+            u = urljoin(page_url, m.group(1).strip())
+            if u.startswith(("http://", "https://")) and u not in seen:
+                seen.add(u)
+                out.append(u)
+        for m in re.finditer(
+            r'https?://[^\s"\'<>]+?\.(?:ass|srt|vtt)(?:\?[^\s"\'<>]*)?',
+            html,
+            re.I,
+        ):
+            u = m.group(0).strip()
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
+
+    def _extract_episode_id(self, html: str) -> str | None:
+        m = re.search(
+            r'<input[^>]*\bid\s*=\s*["\']e_id["\'][^>]*\bvalue\s*=\s*["\'](\d+)["\']',
+            html,
+            re.I,
+        )
+        if not m:
+            return None
+        v = m.group(1).strip()
+        return v or None
+
+    def _resolve_mpd_urls_via_api(
+        self, html: str, page_url: str, on_status=None
+    ) -> tuple[dict[str, str], list[str], list[str]]:
+        """
+        Resolve MPD candidates from /player/api using hidden input #e_id.
+        Returns:
+          - map quality->mpd_url
+          - ordered mpd candidates (multi-domain)
+          - subtitle urls from api payload
+        """
+        h = self.cfg.h
+        eid = self._extract_episode_id(html)
+        if not eid:
+            return {}, [], []
+        api_url = h["base_url"].rstrip("/") + "/player/api"
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": page_url,
+            "Origin": h["origin"],
+        }
+        xsrf = self.session.cookies.get("XSRF-TOKEN", "")
+        if xsrf:
+            headers["X-XSRF-TOKEN"] = unquote(xsrf)
+        try:
+            if on_status:
+                on_status("player api resolve")
+            with self.session.post(
+                api_url,
+                headers=headers,
+                json={"episode_id": str(eid)},
+                timeout=float(h["request_timeout_sec"]),
+            ) as resp:
+                resp.raise_for_status()
+                data = resp.json()
+            if not isinstance(data, dict):
+                return {}, [], []
+            stream_url = str(data.get("stream_url", "")).strip().strip("/")
+            domains: list[str] = []
+            for key in ("stream_domains", "asia_stream_domains"):
+                vals = data.get(key) or []
+                if isinstance(vals, list):
+                    for d in vals:
+                        dom = str(d).strip().rstrip("/")
+                        if dom and dom not in domains:
+                            domains.append(dom)
+            qkeys = sorted(
+                [str(k) for k in self._quality_res().keys()],
+                key=lambda z: int(z),
+                reverse=True,
+            )
+            mpd_candidates: list[str] = []
+            mpd_map: dict[str, str] = {}
+            if stream_url and domains and qkeys:
+                for q in qkeys:
+                    q_candidates = [
+                        f"{dom}/{stream_url}/{q}/manifest.mpd" for dom in domains
+                    ]
+                    for u in q_candidates:
+                        if u not in mpd_candidates:
+                            mpd_candidates.append(u)
+                    if q_candidates and q not in mpd_map:
+                        mpd_map[q] = q_candidates[0]
+            sub_urls: list[str] = []
+            extras = data.get("extra_subtitles") or []
+            if isinstance(extras, list):
+                for raw in extras:
+                    s = str(raw).strip()
+                    if not s:
+                        continue
+                    u = s if s.startswith(("http://", "https://")) else urljoin(page_url, s)
+                    if u not in sub_urls:
+                        sub_urls.append(u)
+            if on_status and mpd_candidates:
+                on_status(f"player api found {len(mpd_candidates)} mpd candidate(s)")
+            return mpd_map, mpd_candidates, sub_urls
+        except Exception:
+            return {}, [], []
+
+    def _rank_mpd_candidates(self, candidates: list[str], on_status=None) -> list[str]:
+        """
+        Probe MPD candidates quickly and sort by latency.
+        Unreachable candidates are kept at the end (still usable as fallback).
+        """
+        if not candidates:
+            return []
+        req_t = max(1.0, min(float(self.cfg.h["request_timeout_sec"]), 6.0))
+        scored: list[tuple[float, str]] = []
+        if on_status and len(candidates) > 1:
+            on_status(f"mpd health-check {len(candidates)} candidate(s)")
+        for u in candidates:
+            t0 = time.monotonic()
+            ok = False
+            try:
+                with self.session.get(u, timeout=req_t, stream=True) as resp:
+                    ok = resp.status_code == 200
+            except Exception:
+                ok = False
+            dt = time.monotonic() - t0
+            scored.append((dt if ok else 9999.0, u))
+        scored.sort(key=lambda x: x[0])
+        ranked = [u for _, u in scored]
+        if on_status and ranked:
+            on_status("mpd health-check done")
+        return ranked
 
     def _get_page_html(self, page_url: str, on_status=None) -> tuple[str | None, str]:
         """
@@ -391,6 +572,15 @@ class HStreamDownloader:
                         continue
                     media = seg.get("media", "")
                     start = int(seg.get("startNumber", 1))
+                    rep_id = str(rep.get("id", ""))
+                    try:
+                        rep_bw = int(rep.get("bandwidth", 0))
+                    except (TypeError, ValueError):
+                        rep_bw = 0
+                    try:
+                        rep_h = int(rep.get("height", 0))
+                    except (TypeError, ValueError):
+                        rep_h = 0
                     timeline = None
                     for ch in seg:
                         if ch.tag.endswith("SegmentTimeline"):
@@ -402,14 +592,39 @@ class HStreamDownloader:
                     for s_el in timeline:
                         if s_el.tag.endswith("S"):
                             count += int(s_el.get("r", 0)) + 1
-                    entry = {"media": media, "start": start, "count": count}
+                    entry = {
+                        "media": media,
+                        "start": start,
+                        "count": count,
+                        "rep_id": rep_id,
+                        "bandwidth": rep_bw,
+                        "height": rep_h,
+                    }
                     if is_vid:
                         info["video"].append(entry)
                     elif is_aud:
                         info["audio"].append(entry)
+            if info["video"]:
+                info["video"].sort(
+                    key=lambda x: (
+                        int(x.get("height", 0)),
+                        int(x.get("bandwidth", 0)),
+                    ),
+                    reverse=True,
+                )
             return info
         except Exception:
             return None
+
+    def _expand_segment_template(self, template: str, number: int, rep_id: str) -> str:
+        s = template
+        # Common MPD placeholders
+        s = s.replace("$RepresentationID$", rep_id)
+        s = re.sub(r"\$RepresentationID%0\d+d\$", rep_id, s)
+        s = s.replace("$Number$", str(number))
+        s = s.replace("$Number%05d$", f"{number:05d}")
+        s = re.sub(r"\$Number%0(\d+)d\$", lambda m: f"{number:0{int(m.group(1))}d}", s)
+        return s
 
     def _download_chunk(self, url, filepath, retries=None) -> bool:
         h = self.cfg.h
@@ -448,8 +663,7 @@ class HStreamDownloader:
         ratio = float(h["chunk_min_complete_ratio"])
         chunk_list = []
         for i in range(vi["start"], vi["start"] + vi["count"]):
-            path = vi["media"].replace("$Number$", str(i))
-            path = path.replace("$Number%05d$", f"{i:05d}")
+            path = self._expand_segment_template(vi["media"], i, str(vi.get("rep_id", "")))
             chunk_list.append((i, path))
         total = len(chunk_list)
         if on_status:
@@ -497,6 +711,59 @@ class HStreamDownloader:
         if on_progress:
             on_progress(100)
         return ok, result
+
+    def _download_subtitle(self, subtitle_url: str, workdir: str, name: str) -> str | None:
+        try:
+            ext = subtitle_url.split("?", 1)[0].rsplit(".", 1)[-1].lower()
+            if ext not in {"ass", "srt", "vtt"}:
+                ext = "ass"
+            out_path = os.path.join(workdir, f"{name}.{ext}")
+            with self.session.get(subtitle_url, timeout=float(self.cfg.h["request_timeout_sec"])) as resp:
+                resp.raise_for_status()
+                data = resp.content
+            if not data:
+                return None
+            Path(out_path).write_bytes(data)
+            return out_path if os.path.getsize(out_path) > 0 else None
+        except Exception:
+            return None
+
+    def _embed_subtitle(self, video_path: str, subtitle_path: str) -> tuple[bool, str]:
+        hx = self.cfg.h
+        ext = Path(video_path).suffix.lower()
+        if ext not in {".mp4", ".mkv"}:
+            return False, "unsupported container for subtitle embed"
+        tmp_out = str(Path(video_path).with_name(Path(video_path).stem + ".subtmp" + ext))
+        cmd = [
+            hx["ffmpeg_binary"],
+            "-y",
+            "-i",
+            video_path,
+            "-i",
+            subtitle_path,
+            "-map",
+            "0",
+            "-map",
+            "1:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "copy",
+        ]
+        if ext == ".mp4":
+            cmd += ["-c:s", "mov_text"]
+        else:
+            # mkv can keep ASS/SRT directly.
+            cmd += ["-c:s", "copy"]
+        cmd += ["-metadata:s:s:0", "language=eng", tmp_out]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            return False, proc.stderr[-int(hx["stderr_tail_chars"]):]
+        try:
+            os.replace(tmp_out, video_path)
+        except OSError as exc:
+            return False, str(exc)
+        return True, video_path
 
     def _convert_chunks(self, workdir, name):
         hx = self.cfg.h
@@ -676,6 +943,23 @@ class HStreamDownloader:
                 on_status("page load failed")
             return False, name, self.cfg.h_msg("page_load_failed")
         mpd_urls = self._extract_mpd_urls(html)
+        api_mpd_map, api_mpd_candidates, api_subtitles = self._resolve_mpd_urls_via_api(
+            html, page_url, on_status=on_status
+        )
+        for q, u in api_mpd_map.items():
+            mpd_urls.setdefault(q, u)
+        subtitle_urls = self._extract_subtitle_urls(html, page_url)
+        for su in api_subtitles:
+            if su not in subtitle_urls:
+                subtitle_urls.append(su)
+        mpd_all_candidates: list[str] = []
+        for u in api_mpd_candidates:
+            if u not in mpd_all_candidates:
+                mpd_all_candidates.append(u)
+        for u in mpd_urls.values():
+            if u not in mpd_all_candidates:
+                mpd_all_candidates.append(u)
+        mpd_all_candidates = self._rank_mpd_candidates(mpd_all_candidates, on_status=on_status)
         if mpd_urls and on_status and page_src:
             on_status(f"mpd found via {page_src}")
         elif mpd_urls and on_status:
@@ -692,7 +976,7 @@ class HStreamDownloader:
         if mpd_urls:
             keys = list(mpd_urls.keys())
             selected = mpd_urls.get(self.quality) or mpd_urls[max(keys, key=lambda z: int(z))]
-            ytdl_candidates = [selected]
+            ytdl_candidates = [selected] + [u for u in mpd_all_candidates if u != selected]
             have_mpd = True
         elif fallback_urls:
             selected = None
@@ -718,6 +1002,12 @@ class HStreamDownloader:
             )
             if ok:
                 out = self._find_video(workdir, name)
+                if out and subtitle_urls:
+                    if on_status:
+                        on_status("embedding subtitle")
+                    sub_file = self._download_subtitle(subtitle_urls[0], workdir, name)
+                    if sub_file:
+                        self._embed_subtitle(out, sub_file)
                 return True, name, out or workdir
             if on_status:
                 on_status("yt-dlp failed")
@@ -747,8 +1037,15 @@ class HStreamDownloader:
                 on_status("trying chunks")
             if attempt > 1 and on_status:
                 on_status(f"chunks retry {attempt}/{self.max_retries}")
+            mpd_try = selected
+            if mpd_all_candidates:
+                mpd_try = mpd_all_candidates[(attempt - 1) % len(mpd_all_candidates)]
+                if on_status and len(mpd_all_candidates) > 1:
+                    on_status(
+                        f"chunks using mpd {((attempt - 1) % len(mpd_all_candidates)) + 1}/{len(mpd_all_candidates)}"
+                    )
             ok, result = self._download_chunks(
-                selected,
+                mpd_try,
                 workdir,
                 name,
                 on_progress,
@@ -756,6 +1053,12 @@ class HStreamDownloader:
             )
             if ok:
                 out = self._find_video(workdir, name)
+                if out and subtitle_urls:
+                    if on_status:
+                        on_status("embedding subtitle")
+                    sub_file = self._download_subtitle(subtitle_urls[0], workdir, name)
+                    if sub_file:
+                        self._embed_subtitle(out, sub_file)
                 return True, name, out or result
             last_err = str(result)
             if attempt < self.max_retries:
