@@ -91,11 +91,12 @@
     "list_file": "list.txt",
     "clean_list_file": "clean_url.txt",
     "failed_links_file": "failed_links.txt",
-    "success_links_file": "link_succsess.txt",
+    "success_links_file": "success_links.txt",
     "credentials_file": ".credentials.json",
     "cookies_file": ".cookies.txt",
     "cookies_cache_file": ".cookies_cache.txt",
-    "phantomjs_name": "phantomjs.exe"
+    "phantomjs_name": "phantomjs.exe",
+    "link_files_merge": true
   },
   "proxy": {
     "default_url": "socks5://localhost:10802"
@@ -132,6 +133,7 @@
       "hstream_format": "HStream format",
       "hstream_method": "HStream method",
       "hstream_browser": "HStream: use browser (Selenium)",
+      "hstream_headless": "HStream: headless browser (no window)?",
       "hstream_cuda": "HStream: FFmpeg encoder (auto/cpu/cuda)",
       "delete_chunks": "Delete chunks after convert",
       "generic_output_dir": "Generic output dir",
@@ -194,6 +196,7 @@
       "format": "HStream format",
       "method": "HStream method",
       "browser": "Selenium browser",
+      "headless": "Headless browser",
       "chunks": "Delete chunks",
       "output": "Generic output",
       "urls": "URLs queued"
@@ -227,6 +230,8 @@
     "user_agent_linux": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
     "user_agent_windows": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "mpd_source_regex": "<source\\s+src=\"([^\"]+manifest\\.mpd)\"\\s+size=\"(\\d+)\"",
+    "fallback_media_extensions": ["m3u8", "m3u", "mpd", "mp4", "mkv", "webm"],
+    "fallback_media_extra_regexes": [],
     "quality_resolution": {
       "720": [1280, 720],
       "1080": [1920, 1080],
@@ -236,6 +241,7 @@
     "use_browser_default": true,
     "headless_default": true,
     "prefer_ytdlp_default": true,
+    "ytdlp_append_episode_page": false,
     "delete_chunks_default": true,
     "max_retries": 10,
     "request_timeout_sec": 30,
@@ -300,6 +306,8 @@
       "selenium_not_installed": "selenium not installed",
       "no_webdriver": "no working driver",
       "mpd_not_found": "Could not find MPD manifest",
+      "page_load_failed": "Could not load episode page",
+      "no_playable_url": "Could not find MPD manifest or other playable URL (m3u8/mp4/…)",
       "ytdlp_output_too_small": "Output file too small or missing",
       "mpd_parse_failed": "Failed to parse MPD manifest",
       "ffmpeg_not_found": "ffmpeg not found",
@@ -366,7 +374,10 @@
       "Sec-Fetch-Mode": "navigate"
     },
     "user_agent_windows": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "user_agent_linux": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    "user_agent_linux": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "use_page_media_fallback": true,
+    "fallback_media_extensions": ["m3u8", "m3u", "mpd", "mp4", "mkv", "webm"],
+    "fallback_media_extra_regexes": []
   },
   "selenium": {
     "browser_fallback_order": ["edge", "chrome", "chromium", "firefox", "brave"],

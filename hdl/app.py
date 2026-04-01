@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
-import http.client
 import json
 import os
 import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from hdl import browser as browser_utils
 from hdl import generic_downloader, routing
@@ -54,13 +54,8 @@ def _suppress_httpresponse_finalize_error(unraisable):
     that narrow case to avoid noisy stderr spam.
     """
     try:
-        obj = getattr(unraisable, "object", None)
         exc = getattr(unraisable, "exc_value", None)
-        if (
-            isinstance(obj, http.client.HTTPResponse)
-            and isinstance(exc, ValueError)
-            and "I/O operation on closed file" in str(exc)
-        ):
+        if isinstance(exc, ValueError) and "I/O operation on closed file" in str(exc):
             return
     except Exception:
         pass
@@ -94,6 +89,59 @@ def _fmt_bytes(n: float | int | None) -> str:
     return f"{v:.1f} {units[i]}"
 
 
+def _atomic_write_utf8(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _merge_with_file_lines(path: Path, new_urls: list[str]) -> list[str]:
+    old: list[str] = []
+    if path.exists():
+        try:
+            old = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        except OSError:
+            pass
+    seen = set(old)
+    out = list(old)
+    for u in new_urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+def _persist_session_link_files(cfg, failed_urls: list[str], success_urls: list[str], r: dict, pr: dict) -> None:
+    seen: set[str] = set()
+    unique_failed = [u for u in failed_urls if not (u in seen or seen.add(u))]
+    seen_ok: set[str] = set()
+    unique_success = [u for u in success_urls if not (u in seen_ok or seen_ok.add(u))]
+    if cfg.link_files_merge:
+        unique_failed = _merge_with_file_lines(cfg.failed_links_file, unique_failed)
+        unique_success = _merge_with_file_lines(cfg.success_links_file, unique_success)
+    failed_body = "\n".join(unique_failed) + ("\n" if unique_failed else "")
+    success_body = "\n".join(unique_success) + ("\n" if unique_success else "")
+    try:
+        _atomic_write_utf8(cfg.failed_links_file, failed_body)
+        mode_lbl = "merged" if cfg.link_files_merge else "this run"
+        console.print(
+            f"[yellow]Failed links[/] [dim]({mode_lbl}: {len(unique_failed)} lines)[/] "
+            f"[bold]{cfg.failed_links_file}[/]"
+        )
+    except OSError as exc:
+        console.print(f"[red]Could not write failed links file[/] {cfg.failed_links_file}: {exc}")
+    try:
+        _atomic_write_utf8(cfg.success_links_file, success_body)
+        mode_lbl = "merged" if cfg.link_files_merge else "this run"
+        console.print(
+            f"[green]Success links[/] [dim]({mode_lbl}: {len(unique_success)} lines)[/] "
+            f"[bold]{cfg.success_links_file}[/]"
+        )
+    except OSError as exc:
+        console.print(f"[red]Could not write success links file[/] {cfg.success_links_file}: {exc}")
+
+
 def _load_last_session(cfg) -> dict | None:
     path = cfg.last_session_file
     if not path.exists():
@@ -107,10 +155,11 @@ def _load_last_session(cfg) -> dict | None:
 
 def _save_last_session(cfg, data: dict) -> None:
     try:
-        cfg.last_session_file.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False),
-            "utf-8",
-        )
+        path = cfg.last_session_file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
         pass
 
@@ -324,6 +373,9 @@ def run():
     use_browser = bool(hx["use_browser_default"])
     delete_chunks = bool(hx["delete_chunks_default"])
     ffmpeg_cuda_mode = str(hx.get("ffmpeg_use_cuda", "auto"))
+    headless = bool(hx["headless_default"])
+    if use_prev and last_session:
+        headless = bool(last_session.get("headless", headless))
     if hstream_urls:
         if use_prev and last_session:
             quality = str(last_session.get("quality", ui["quality_default"]))
@@ -349,6 +401,7 @@ def run():
                 choices=list(ui.get("hstream_cuda_choices", ["auto", "cpu", "cuda"])),
                 default=str(ui.get("hstream_cuda_default", ffmpeg_cuda_mode)),
             )
+            headless = Confirm.ask(cfg.prompt_label("hstream_headless"), default=headless)
 
     if use_prev and last_session:
         generic_out = str(last_session.get("generic_out", cfg.g["output_dir_default"]))
@@ -372,12 +425,32 @@ def run():
         recap.add_row(_rl("format"), fmt.upper() if ui.get("recap_format_uppercase") else fmt)
         recap.add_row(_rl("method"), str(rv["method_ytdlp" if prefer_ytdlp else "method_chunks"]))
         recap.add_row(_rl("browser"), str(rv["yes" if use_browser else "no"]))
+        recap.add_row(_rl("headless"), str(rv["yes" if headless else "no"]))
         recap.add_row(_rl("chunks"), str(rv["yes" if delete_chunks else "no"]))
     recap.add_row(_rl("output"), generic_out)
     recap.add_row(_rl("urls"), str(len(urls)))
     console.print()
     console.print(Panel(recap, title=f"[bold]{sp.get('title', 'Ready')}[/]", border_style=str(sp.get("border_style", "blue")), box=_box_named(str(sp.get("box_style", "ROUNDED")))))
     console.print()
+
+    _save_last_session(
+        cfg,
+        {
+            "mode": mode,
+            "use_proxy": bool(proxy),
+            "cookiefile": cookiefile or "",
+            "cookies_browser": cookies_browser or "",
+            "workers": workers,
+            "quality": quality,
+            "format": fmt,
+            "prefer_ytdlp": bool(prefer_ytdlp),
+            "use_browser": bool(use_browser),
+            "delete_chunks": bool(delete_chunks),
+            "ffmpeg_cuda_mode": ffmpeg_cuda_mode,
+            "generic_out": generic_out,
+            "headless": headless,
+        },
+    )
 
     cfg.downloads_dir.mkdir(exist_ok=True)
     cfg.videos_dir.mkdir(exist_ok=True)
@@ -391,7 +464,7 @@ def run():
             quality=quality,
             fmt=fmt,
             use_browser=use_browser,
-            headless=bool(hx["headless_default"]),
+            headless=headless,
             prefer_ytdlp=prefer_ytdlp,
             delete_chunks=delete_chunks,
             ffmpeg_cuda_mode=ffmpeg_cuda_mode,
@@ -583,6 +656,14 @@ def run():
                             failed_urls.append(url)
                             progress.update(task, description=f"  {fail_pfx} {short}")
                             log_event(f"HStream FAIL: {short} -> {str(result)[:90]}", "red")
+                elif is_hstream:
+                    msg = "HStream downloader not available"
+                    with results_lock:
+                        state.mark_failed(url, msg)
+                        fail_list.append((short, msg[:err_show]))
+                        failed_urls.append(url)
+                    progress.update(task, description=f"  {fail_pfx} {short}")
+                    log_event(f"{short}: {msg}", "red")
                 else:
                     gok, gmsg = generic_downloader.download_generic_video(
                         cfg,
@@ -631,9 +712,20 @@ def run():
                     stop_event.set()
                     for pending in futs:
                         pending.cancel()
+                    _persist_session_link_files(cfg, failed_urls, success_urls, r, pr)
                     raise
-                except Exception:
+                except CancelledError:
                     pass
+                except Exception as exc:
+                    url = futs[fut]
+                    short = url.rstrip("/").split("/")[-1][:tmax]
+                    with results_lock:
+                        if routing.is_hstream_url(url, cfg):
+                            state.mark_failed(url, str(exc))
+                        fail_list.append((short, str(exc)[:err_show]))
+                        failed_urls.append(url)
+                    log_event(f"Worker error: {short} -> {str(exc)[:90]}", "red")
+    _persist_session_link_files(cfg, failed_urls, success_urls, r, pr)
     if hs:
         hs.close_browser()
 
@@ -667,39 +759,11 @@ def run():
             )
         )
         console.print()
-    # Always refresh failed links file with failures from this run.
-    seen: set[str] = set()
-    unique_failed = [u for u in failed_urls if not (u in seen or seen.add(u))]
-    cfg.failed_links_file.write_text("\n".join(unique_failed), "utf-8")
-    if unique_failed:
-        console.print(f"[yellow]Failed links saved:[/] [bold]{cfg.failed_links_file}[/]")
-    seen_ok: set[str] = set()
-    unique_success = [u for u in success_urls if not (u in seen_ok or seen_ok.add(u))]
-    cfg.success_links_file.write_text("\n".join(unique_success), "utf-8")
-    if unique_success:
-        console.print(f"[green]Success links saved:[/] [bold]{cfg.success_links_file}[/]")
     if ok_list and hstream_urls:
         console.print(cfg.text("summary", "hstream_saved", path=str(cfg.videos_dir)))
     if ok_list and generic_urls:
         console.print(cfg.text("summary", "generic_saved", path=generic_out))
     console.print()
-    _save_last_session(
-        cfg,
-        {
-            "mode": mode,
-            "use_proxy": bool(proxy),
-            "cookiefile": cookiefile or "",
-            "cookies_browser": cookies_browser or "",
-            "workers": workers,
-            "quality": quality,
-            "format": fmt,
-            "prefer_ytdlp": bool(prefer_ytdlp),
-            "use_browser": bool(use_browser),
-            "delete_chunks": bool(delete_chunks),
-            "ffmpeg_cuda_mode": ffmpeg_cuda_mode,
-            "generic_out": generic_out,
-        },
-    )
 
 
 def run_with_interrupt_handling():

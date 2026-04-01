@@ -16,7 +16,8 @@ from urllib.parse import urljoin
 
 import requests
 
-from hdl import routing
+from hdl import cookiefile as cookiefile_util
+from hdl import page_media, routing
 from hdl.browser import SELENIUM_AVAILABLE, YTDLP_AVAILABLE, create_selenium_driver
 from hdl.config import AppConfig
 
@@ -176,25 +177,25 @@ class HStreamDownloader:
     def _sync_cookies(self):
         if not self._driver:
             return
-        h = self.cfg.h
         browser_cookies = self._driver.get_cookies()
         for c in browser_cookies:
             self.session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
-        lines = list(h["cookies_netscape_header_lines"])
-        for c in browser_cookies:
-            domain = c.get("domain", "")
-            flag = "TRUE" if domain.startswith(".") else "FALSE"
-            path = c.get("path", "/")
-            secure = "TRUE" if c.get("secure") else "FALSE"
-            expiry = str(int(c.get("expiry", 0)))
-            lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{c['name']}\t{c['value']}")
-        self.cfg.cookies_file.write_text("\n".join(lines), "utf-8")
+        try:
+            cookiefile_util.write_netscape_from_browser_cookies(
+                browser_cookies, self.cfg.cookies_file
+            )
+        except OSError:
+            pass
 
     def _extract_mpd_urls(self, html: str) -> dict[str, str]:
         pat = self.cfg.h["mpd_source_regex"]
         return {size: url for url, size in re.findall(pat, html)}
 
-    def get_mpd_urls(self, page_url: str, on_status=None) -> dict[str, str] | None:
+    def _get_page_html(self, page_url: str, on_status=None) -> tuple[str | None, str]:
+        """
+        Load the episode page and return (html, source) where source is
+        \"browser\", \"http\", or \"\" if both paths failed.
+        """
         h = self.cfg.h
         vtag = h["selenium_video_tag"]
         tmo = float(h["video_wait_timeout_sec"])
@@ -212,11 +213,11 @@ class HStreamDownloader:
                             time.sleep(aw)
                         except TimeoutException:
                             pass
-                        mpd = self._extract_mpd_urls(self._driver.page_source)
-                        if mpd:
-                            if on_status:
-                                on_status("mpd found via browser")
-                            return mpd
+                        try:
+                            self._sync_cookies()
+                        except Exception:
+                            pass
+                        return (self._driver.page_source, "browser")
                     except TimeoutException:
                         if on_status:
                             on_status("browser timeout, fallback http")
@@ -227,18 +228,25 @@ class HStreamDownloader:
                     except Exception:
                         if on_status:
                             on_status("browser failed, fallback http")
-                        pass
         try:
             if on_status:
                 on_status("http fetch page")
             with self.session.get(page_url, timeout=req_t) as resp:
                 resp.raise_for_status()
-                mpd = self._extract_mpd_urls(resp.text)
-            if mpd and on_status:
-                on_status("mpd found via http")
-            return mpd or None
+                return (resp.text, "http")
         except Exception:
+            return (None, "")
+
+    def get_mpd_urls(self, page_url: str, on_status=None) -> dict[str, str] | None:
+        html, src = self._get_page_html(page_url, on_status)
+        if not html:
             return None
+        mpd = self._extract_mpd_urls(html)
+        if mpd and on_status and src:
+            on_status(f"mpd found via {src}")
+        elif mpd and on_status:
+            on_status("mpd found")
+        return mpd or None
 
     def _ytdlp_fmt(self, fallback=False) -> str:
         yd = self.cfg.ytdlp_cfg()
@@ -251,7 +259,7 @@ class HStreamDownloader:
     def _download_ytdlp(
         self,
         page_url,
-        mpd_url,
+        media_candidates: list[str],
         name,
         workdir,
         on_progress,
@@ -259,8 +267,17 @@ class HStreamDownloader:
         on_transfer=None,
     ):
         h = self.cfg.h
-        # Prefer MPD directly for hstream; page URLs are often unsupported by yt-dlp.
-        urls_to_try = [u for u in (mpd_url, page_url) if u]
+        # Try each manifest/stream URL first, then the episode page (often unsupported alone).
+        seen: set[str] = set()
+        urls_to_try: list[str] = []
+        for u in media_candidates:
+            s = (u or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                urls_to_try.append(s)
+        pu = (page_url or "").strip()
+        if pu and pu not in seen and bool(h.get("ytdlp_append_episode_page", False)):
+            urls_to_try.append(pu)
         last_err = ""
         min_out = int(h["min_output_bytes"])
         yd = self.cfg.ytdlp_cfg()
@@ -293,7 +310,7 @@ class HStreamDownloader:
                     if self.proxy:
                         ydl_opts["proxy"] = self.proxy
                     cf = self.cfg.cookies_file
-                    if cf.exists():
+                    if cf.exists() and cookiefile_util.netscape_cookie_file_loads(cf):
                         ydl_opts["cookiefile"] = str(cf)
                     if on_progress:
 
@@ -652,20 +669,47 @@ class HStreamDownloader:
         workdir = str(self.cfg.downloads_dir / name)
         os.makedirs(workdir, exist_ok=True)
         if on_status:
-            on_status("resolve mpd")
-        mpd_urls = self.get_mpd_urls(page_url, on_status=on_status)
-        if not mpd_urls:
+            on_status("resolve media")
+        html, page_src = self._get_page_html(page_url, on_status=on_status)
+        if not html:
             if on_status:
-                on_status("mpd not found")
-            return False, name, self.cfg.h_msg("mpd_not_found")
-        keys = list(mpd_urls.keys())
-        selected = mpd_urls.get(self.quality) or mpd_urls[max(keys, key=lambda z: int(z))]
+                on_status("page load failed")
+            return False, name, self.cfg.h_msg("page_load_failed")
+        mpd_urls = self._extract_mpd_urls(html)
+        if mpd_urls and on_status and page_src:
+            on_status(f"mpd found via {page_src}")
+        elif mpd_urls and on_status:
+            on_status("mpd found")
+        hx = self.cfg.h
+        fallback_urls = page_media.extract_fallback_media_urls(
+            html,
+            page_url,
+            extensions=list(
+                hx.get("fallback_media_extensions") or page_media.DEFAULT_FALLBACK_MEDIA_EXTENSIONS
+            ),
+            extra_regexes=list(hx.get("fallback_media_extra_regexes") or []),
+        )
+        if mpd_urls:
+            keys = list(mpd_urls.keys())
+            selected = mpd_urls.get(self.quality) or mpd_urls[max(keys, key=lambda z: int(z))]
+            ytdl_candidates = [selected]
+            have_mpd = True
+        elif fallback_urls:
+            selected = None
+            ytdl_candidates = list(fallback_urls)
+            have_mpd = False
+            if on_status:
+                on_status(f"no mpd; trying {len(fallback_urls)} alternate url(s)")
+        else:
+            if on_status:
+                on_status("no mpd or stream url")
+            return False, name, self.cfg.h_msg("no_playable_url")
         if self.prefer_ytdlp:
             if on_status:
                 on_status("trying yt-dlp")
             ok, err = self._download_ytdlp(
                 page_url,
-                selected,
+                ytdl_candidates,
                 name,
                 workdir,
                 on_progress,
@@ -678,6 +722,24 @@ class HStreamDownloader:
             if on_status:
                 on_status("yt-dlp failed")
             # When yt-dlp mode is selected, do not fallback to chunks.
+            return False, name, err or self.cfg.h_msg("ytdlp_output_too_small")
+        if not have_mpd:
+            if not YTDLP_AVAILABLE:
+                return False, name, self.cfg.h_msg("no_playable_url")
+            if on_status:
+                on_status("chunks need mpd; trying yt-dlp on alternate url")
+            ok, err = self._download_ytdlp(
+                page_url,
+                ytdl_candidates,
+                name,
+                workdir,
+                on_progress,
+                on_status=on_status,
+                on_transfer=on_transfer,
+            )
+            if ok:
+                out = self._find_video(workdir, name)
+                return True, name, out or workdir
             return False, name, err or self.cfg.h_msg("ytdlp_output_too_small")
         last_err = ""
         for attempt in range(1, self.max_retries + 1):

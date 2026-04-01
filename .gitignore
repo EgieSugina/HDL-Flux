@@ -21,6 +21,7 @@ list.txt
 .last_session.json
 clean_url.txt
 failed_links.txt
+success_links.txt
 link_succsess.txt
 
 # Secrets / local auth

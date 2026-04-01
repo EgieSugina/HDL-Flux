@@ -111,11 +111,12 @@ class AppConfig:
         self.list_file = root / p["list_file"]
         self.clean_list_file = root / p.get("clean_list_file", "clean_url.txt")
         self.failed_links_file = root / p.get("failed_links_file", "failed_links.txt")
-        self.success_links_file = root / p.get("success_links_file", "link_succsess.txt")
+        self.success_links_file = root / p.get("success_links_file", "success_links.txt")
         self.credentials_file = root / p["credentials_file"]
         self.cookies_file = root / p["cookies_file"]
         self.cookies_cache_file = root / p["cookies_cache_file"]
         self.phantomjs_name = p.get("phantomjs_name", "phantomjs.exe")
+        self.link_files_merge = bool(p.get("link_files_merge", True))
         skip_dirs = p.get("skip_if_exists_dirs", [])
         self.skip_if_exists_dirs: list[Path] = [self.videos_dir]
         if isinstance(skip_dirs, list):
