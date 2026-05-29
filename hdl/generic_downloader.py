@@ -11,7 +11,7 @@ import requests
 from requests.utils import dict_from_cookiejar
 
 from hdl import cookiefile as cookiefile_util
-from hdl import page_media
+from hdl import jwplayer_media, page_media
 from hdl.config import AppConfig
 
 try:
@@ -117,6 +117,9 @@ def build_generic_ydl_opts(
     mof = g.get("merge_output_format")
     if isinstance(mof, str) and mof.strip():
         ydl_opts["merge_output_format"] = mof.strip()
+    fmt_sort = g.get("format_sort")
+    if isinstance(fmt_sort, list) and fmt_sort:
+        ydl_opts["format_sort"] = [str(x) for x in fmt_sort if str(x).strip()]
     return ydl_opts
 
 
@@ -161,12 +164,18 @@ def download_generic_video(
     rd = int(retry_delay if retry_delay is not None else g["retry_delay_sec"])
     err_max = int(g["error_message_max_len"])
     fneedle = str(g.get("format_error_substring", "format")).lower()
-    primary = str(g["format"])
+    primary = str(g.get("format_best") or g["format"])
     fmt_chain = [primary]
     for x in g.get("format_fallbacks", []):
         s = str(x).strip()
         if s and s not in fmt_chain:
             fmt_chain.append(s)
+    fb_default = str(g.get("format_fallback_chain", "")).strip()
+    if fb_default and fb_default not in fmt_chain:
+        fmt_chain.append(fb_default)
+    best_single = str(g.get("format_best_single", "best")).strip()
+    if best_single and best_single not in fmt_chain:
+        fmt_chain.append(best_single)
 
     ext_list = list(
         g.get("fallback_media_extensions") or page_media.DEFAULT_FALLBACK_MEDIA_EXTENSIONS
@@ -236,6 +245,21 @@ def download_generic_video(
                     extensions=ext_list,
                     extra_regexes=extra_rx,
                 )
+                if bool(g.get("jwplayer_follow_embeds", True)):
+                    bait = tuple(g.get("jwplayer_bait_host_substrings") or [])
+                    jw_found = jwplayer_media.extract_jwplayer_with_embeds(
+                        html,
+                        url,
+                        lambda u: _fetch_generic_page_html(u, cfg, cookiefile),
+                        extensions=ext_list,
+                        follow_embeds=True,
+                        max_embed_depth=int(g.get("jwplayer_embed_max_depth", 1)),
+                        bait_substrings=bait if bait else None,
+                    )
+                    for u in jw_found:
+                        if u not in found:
+                            found.append(u)
+                found = page_media.sort_media_urls_by_quality(found)
                 new_only = [u for u in found if u != url]
                 if new_only:
                     candidates = list(dict.fromkeys(new_only + [url]))

@@ -84,6 +84,13 @@ class HStreamDownloader:
     def _quality_res(self) -> dict[str, tuple[int, int]]:
         return self.cfg.hstream_quality_res()
 
+    def _best_quality_label(self, available: list[str] | None = None) -> str:
+        """Highest quality label from discovered streams or configured resolutions."""
+        if available:
+            return max(available, key=lambda z: int(z))
+        qmap = self._quality_res()
+        return max(qmap.keys(), key=lambda z: int(z))
+
     def _init_browser(self) -> bool:
         if not SELENIUM_AVAILABLE or not self.use_browser:
             return False
@@ -453,8 +460,7 @@ class HStreamDownloader:
         yd = self.cfg.ytdlp_cfg()
         if fallback:
             return str(yd["format_fallback_chain"])
-        qmap = self._quality_res()
-        lab = self.quality if self.quality in qmap else max(qmap.keys(), key=lambda z: int(z))
+        lab = self._best_quality_label()
         return str(yd["format_height_template"]).format(h=lab)
 
     def _download_ytdlp(
@@ -845,7 +851,8 @@ class HStreamDownloader:
         m = re.search(hx["chunk_filename_regex"], os.path.basename(chunks[0]))
         start = int(m.group(1)) if m else 0
         qres = self._quality_res()
-        w, hdim = qres.get(self.quality, qres[max(qres.keys(), key=lambda z: int(z))])
+        best = self._best_quality_label()
+        w, hdim = qres.get(best, qres[max(qres.keys(), key=lambda z: int(z))])
         output = os.path.join(workdir, f"{name}.{self.fmt}")
         seg_in = os.path.join(workdir, hx["ffmpeg_input_segment_pattern"])
         cmd = [
@@ -1050,7 +1057,7 @@ class HStreamDownloader:
         )
         if mpd_urls:
             keys = list(mpd_urls.keys())
-            selected = mpd_urls.get(self.quality) or mpd_urls[max(keys, key=lambda z: int(z))]
+            selected = mpd_urls[self._best_quality_label(keys)]
             ytdl_candidates = [selected] + [u for u in mpd_all_candidates if u != selected]
             have_mpd = True
         elif fallback_urls:
