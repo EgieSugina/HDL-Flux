@@ -218,7 +218,9 @@ def extract_jwplayer_media_urls(
     """
     if not html:
         return []
-    exts = extensions if extensions else list(page_media.DEFAULT_FALLBACK_MEDIA_EXTENSIONS)
+    exts = (
+        extensions if extensions else list(page_media.DEFAULT_FALLBACK_MEDIA_EXTENSIONS)
+    )
     raw_candidates: list[str] = []
 
     if page_uses_jwplayer(html) or _APP_JSON_SCRIPT_RE.search(html):
