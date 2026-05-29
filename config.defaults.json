@@ -388,7 +388,12 @@
       "test-videos.co.uk",
       "sample-videos.com",
       "commondatastorage.googleapis.com/gtv-videos-bucket"
-    ]
+    ],
+    "embed_first_hosts": ["sakuhentai.net"],
+    "embed_resolve_before_ytdlp": true,
+    "use_source_url_filename": true,
+    "stream_outtmpl": "%(source_slug)s.%(ext)s",
+    "concurrent_fragment_downloads": 1
   },
   "selenium": {
     "browser_fallback_order": ["edge", "chrome", "chromium", "firefox", "brave"],

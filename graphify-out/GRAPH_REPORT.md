@@ -1,16 +1,16 @@
 # Graph Report - hls-downloader  (2026-05-29)
 
 ## Corpus Check
-- 24 files · ~21,934 words
+- 25 files · ~22,774 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 668 nodes · 973 edges · 33 communities (30 shown, 3 thin omitted)
+- 699 nodes · 1032 edges · 35 communities (32 shown, 3 thin omitted)
 - Extraction: 94% EXTRACTED · 6% INFERRED · 0% AMBIGUOUS · INFERRED: 62 edges (avg confidence: 0.5)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `8bf8e95d`
+- Built from commit: `81638eec`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -47,12 +47,14 @@
 - [[_COMMUNITY_Community 30|Community 30]]
 - [[_COMMUNITY_Community 31|Community 31]]
 - [[_COMMUNITY_Community 32|Community 32]]
+- [[_COMMUNITY_Community 33|Community 33]]
+- [[_COMMUNITY_Community 37|Community 37]]
 
 ## God Nodes (most connected - your core abstractions)
 1. `hstream` - 70 edges
 2. `HStreamDownloader` - 53 edges
 3. `AppConfig` - 49 edges
-4. `generic` - 37 edges
+4. `generic` - 42 edges
 5. `StateManager` - 31 edges
 6. `ui` - 28 edges
 7. `MainWindow` - 24 edges
@@ -61,6 +63,8 @@
 10. `messages` - 16 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `Path` --uses--> `AppConfig`  [INFERRED]
+  hdl/browser.py → hdl/config.py
 - `main()` --calls--> `load_config()`  [EXTRACTED]
   clean_urls.py → hdl/config.py
 - `Console` --uses--> `StateManager`  [INFERRED]
@@ -69,10 +73,8 @@
   hdl/app.py → hdl/state_manager.py
 - `int` --uses--> `StateManager`  [INFERRED]
   hdl/app.py → hdl/state_manager.py
-- `Path` --uses--> `StateManager`  [INFERRED]
-  hdl/app.py → hdl/state_manager.py
 
-## Communities (33 total, 3 thin omitted)
+## Communities (35 total, 3 thin omitted)
 
 ### Community 0 - "Community 0"
 Cohesion: 0.03
@@ -80,23 +82,23 @@ Nodes (66): hstream, after_video_element_wait_sec, base_url, chunk_download_work
 
 ### Community 1 - "Community 1"
 Cohesion: 0.07
-Nodes (23): _atomic_write(), DownloadWorker, _fmt_bytes(), _GuiConsole, _load_urls_from_file(), MainWindow, _platform_downloads_dir(), AppConfig (+15 more)
+Nodes (22): _atomic_write(), DownloadWorker, _fmt_bytes(), _GuiConsole, _load_urls_from_file(), MainWindow, _platform_downloads_dir(), AppConfig (+14 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.09
-Nodes (35): _apply_webdriver_timeouts(), _common_chromium_args(), create_selenium_driver(), default_browser_ytdlp_name(), export_cookies_ytdlp(), kill_browser_for_cookies(), _match_browser_rules(), AppConfig (+27 more)
+Nodes (35): AppConfig, int, str, build_generic_ydl_opts(), _collect_stream_targets(), detect_site(), download_generic_video(), _embed_first_hosts() (+27 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.04
 Nodes (45): browser_kill, after_kill_sleep_sec, pkill_timeout_sec, taskkill_timeout_sec, unix, windows, paths, base_dir (+37 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.11
-Nodes (13): HStreamDownloader, move_to_videos(), AppConfig, bool, int, Path, str, Extract MPD URLs from page source.         Uses primary configured regex, then b (+5 more)
+Cohesion: 0.12
+Nodes (12): HStreamDownloader, AppConfig, bool, int, Path, str, Extract MPD URLs from page source.         Uses primary configured regex, then b, Resolve MPD candidates from /player/api using hidden input #e_id.         Return (+4 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.10
-Nodes (30): Console, _atomic_write_utf8(), _box_named(), _fmt_bytes(), _load_last_session(), _make_console(), _merge_with_file_lines(), _persist_session_link_files() (+22 more)
+Cohesion: 0.09
+Nodes (33): Console, _atomic_write_utf8(), _box_named(), _fmt_bytes(), _load_last_session(), _make_console(), _merge_with_file_lines(), _persist_session_link_files() (+25 more)
 
 ### Community 6 - "Community 6"
 Cohesion: 0.06
@@ -111,8 +113,8 @@ Cohesion: 0.06
 Nodes (33): subtitle_template, title_primary, title_secondary, generic, cookie_export_probe_urls, format, format_fallbacks, output_dir_default (+25 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.06
-Nodes (33): generic, cookie_export_probe_urls, error_message_max_len, extractor_retries, fallback_media_extensions, fallback_media_extra_regexes, fallback_title, format (+25 more)
+Cohesion: 0.05
+Nodes (38): generic, concurrent_fragment_downloads, cookie_export_probe_urls, embed_first_hosts, embed_resolve_before_ytdlp, error_message_max_len, extractor_retries, fallback_media_extensions (+30 more)
 
 ### Community 10 - "Community 10"
 Cohesion: 0.07
@@ -123,8 +125,8 @@ Cohesion: 0.09
 Nodes (23): ui, auth_mask_chars, comment_prefix, cookie_source_choices, cookie_source_default, format_choices, format_default, hstream_cuda_choices (+15 more)
 
 ### Community 12 - "Community 12"
-Cohesion: 0.21
-Nodes (20): Any, deobfuscate_embedded_json(), extract_embed_page_urls(), extract_jwplayer_media_urls(), extract_jwplayer_with_embeds(), _is_bait_url(), page_uses_jwplayer(), bool (+12 more)
+Cohesion: 0.18
+Nodes (22): Any, deobfuscate_embedded_json(), extract_embed_page_urls(), extract_jwplayer_media_urls(), extract_jwplayer_with_embeds(), _is_bait_url(), page_uses_jwplayer(), bool (+14 more)
 
 ### Community 13 - "Community 13"
 Cohesion: 0.10
@@ -190,8 +192,16 @@ Nodes (4): selenium_selectors, email, password, submit
 Cohesion: 0.67
 Nodes (3): youtube, extractor_args, player_client
 
+### Community 33 - "Community 33"
+Cohesion: 0.40
+Nodes (12): _apply_webdriver_timeouts(), _common_chromium_args(), create_selenium_driver(), default_browser_ytdlp_name(), export_cookies_ytdlp(), kill_browser_for_cookies(), _match_browser_rules(), AppConfig (+4 more)
+
+### Community 37 - "Community 37"
+Cohesion: 0.36
+Nodes (10): _host_of(), is_plausible_embed_url(), page_needs_embed_resolve(), prioritize_embed_urls(), bool, int, str, Resolve direct stream URLs from pages that use external embed players (not JW-on (+2 more)
+
 ## Knowledge Gaps
-- **362 isolated node(s):** `readme`, `list_file`, `state_file`, `cookies_cache_file`, `mode_choices` (+357 more)
+- **368 isolated node(s):** `readme`, `list_file`, `state_file`, `cookies_cache_file`, `mode_choices` (+363 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **3 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -199,11 +209,11 @@ Nodes (3): youtube, extractor_args, player_client
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `ui` connect `Community 11` to `Community 3`, `Community 7`, `Community 13`, `Community 17`, `Community 19`, `Community 24`?**
-  _High betweenness centrality (0.138) - this node is a cross-community bridge._
+  _High betweenness centrality (0.128) - this node is a cross-community bridge._
 - **Why does `hstream` connect `Community 0` to `Community 3`, `Community 15`, `Community 22`, `Community 27`, `Community 28`?**
-  _High betweenness centrality (0.131) - this node is a cross-community bridge._
+  _High betweenness centrality (0.122) - this node is a cross-community bridge._
 - **Why does `generic` connect `Community 9` to `Community 3`, `Community 21`, `Community 23`, `Community 26`, `Community 29`?**
-  _High betweenness centrality (0.076) - this node is a cross-community bridge._
+  _High betweenness centrality (0.077) - this node is a cross-community bridge._
 - **Are the 17 inferred relationships involving `HStreamDownloader` (e.g. with `Console` and `float`) actually correct?**
   _`HStreamDownloader` has 17 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 29 inferred relationships involving `AppConfig` (e.g. with `AppConfig` and `bool`) actually correct?**
@@ -211,4 +221,4 @@ _Questions this graph is uniquely positioned to answer:_
 - **Are the 16 inferred relationships involving `StateManager` (e.g. with `Console` and `float`) actually correct?**
   _`StateManager` has 16 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `readme`, `list_file`, `state_file` to the rest of the system?**
-  _384 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _401 weakly-connected nodes found - possible documentation gaps or missing edges._

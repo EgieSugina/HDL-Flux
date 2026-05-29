@@ -12,6 +12,7 @@ from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from hdl import browser as browser_utils
+from hdl import cookiefile as cookiefile_util
 from hdl import generic_downloader, routing
 from hdl.config import SCRIPT_DIR, apply_phantomjs_path, load_config, load_json_file
 from hdl.hstream import HStreamDownloader, move_to_videos
@@ -328,7 +329,10 @@ def run():
             prev_cookiefile = str(last_session.get("cookiefile", "")).strip()
             prev_browser = str(last_session.get("cookies_browser", "")).strip()
             if prev_cookiefile and os.path.isfile(prev_cookiefile):
-                cookiefile = prev_cookiefile
+                if cookiefile_util.netscape_cookie_file_loads(Path(prev_cookiefile)):
+                    cookiefile = prev_cookiefile
+                else:
+                    cookiefile = None
             elif prev_browser:
                 cookies_browser = prev_browser
             else:
@@ -349,7 +353,7 @@ def run():
                     console.print(cfg.text("cookies", "live_browser"))
             elif csrc == "file":
                 p = Prompt.ask(cfg.prompt_label("cookie_path"))
-                if p and os.path.isfile(p):
+                if p and os.path.isfile(p) and cookiefile_util.netscape_cookie_file_loads(Path(p)):
                     cookiefile = p
             elif csrc != "none":
                 if Confirm.ask(cfg.prompt_label("cookie_close_named", browser=csrc), default=False):

@@ -193,8 +193,14 @@ def extract_embed_page_urls(html: str, page_url: str) -> list[str]:
     out: list[str] = []
 
     def consider(raw: str) -> None:
+        raw = (raw or "").strip()
+        if not raw or "${" in raw or "javascript:" in raw.lower():
+            return
         u = page_media.join_media_url(page_url, raw)
         if not u or u in seen:
+            return
+        host = (urlparse(u).hostname or "").lower()
+        if host.endswith(("a-ads.com", "doubleclick.net", "googlesyndication.com")):
             return
         seen.add(u)
         out.append(u)
