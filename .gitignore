@@ -37,3 +37,5 @@ link_succsess.txt
 .credentials.json
 .cookies.txt
 .cookies_cache.txt
+
+graphify-out/cache/
